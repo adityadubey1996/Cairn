@@ -1,0 +1,95 @@
+@import "tailwindcss";
+@plugin "@tailwindcss/typography";
+
+/* Tokens are copied verbatim from web/src/styles.css — the shipped V1 values,
+   which run darker than DESIGN.md's frontmatter. That file is authoritative;
+   if the two ever disagree again, the code wins. */
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  --radius: 0.625rem;
+  --background: #08090b;   /* Ink */
+  --foreground: #c4c8d1;   /* Paper */
+  --card: #101115;         /* Charcoal */
+  --card-foreground: #c4c8d1;
+  --popover: #101115;
+  --popover-foreground: #c4c8d1;
+  --primary: #6ea8fe;      /* Dusk Blue — interactive only */
+  --primary-foreground: #08090b;
+  --secondary: #101115;
+  --secondary-foreground: #c4c8d1;
+  --muted: #101115;
+  --muted-foreground: #676d79; /* Pencil */
+  --accent: #1a1c22;       /* Graphite — shadcn's hover surface, not the brand accent */
+  --accent-foreground: #c4c8d1;
+  --destructive: #e07a7a;  /* Conflict Red */
+  --success: #7ee2a8;      /* Verified Green */
+  --warning: #e0b56a;      /* Stale Amber */
+  --border: #1a1c22;
+  --input: #1a1c22;
+  --ring: #6ea8fe;
+  --user: #1e2735;         /* Slate Navy — the user's own bubble */
+}
+
+@layer base {
+  * { box-sizing: border-box; margin: 0; scrollbar-width: thin; scrollbar-color: #262b36 transparent; }
+  *::-webkit-scrollbar { width: 8px; height: 8px; }
+  *::-webkit-scrollbar-thumb { background: #262b36; border-radius: 4px; }
+  *::-webkit-scrollbar-track { background: transparent; }
+
+  body {
+    background: var(--background);
+    color: var(--foreground);
+    font: 15px/1.55 -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Assistant answers and article bodies. Batch 2 and 4 render into this. */
+  .md-content {
+    @apply prose prose-invert prose-sm max-w-none
+      prose-headings:font-semibold prose-headings:text-foreground
+      prose-strong:text-foreground prose-strong:font-semibold
+      prose-a:text-primary prose-a:no-underline hover:prose-a:underline
+      prose-code:text-foreground prose-code:bg-card prose-code:border prose-code:border-border prose-code:rounded-sm prose-code:before:content-none prose-code:after:content-none
+      prose-pre:bg-card prose-pre:border prose-pre:border-border prose-pre:rounded-lg
+      prose-th:border-border prose-td:border-border;
+  }
+  /* A citation is a link wrapping inline code; code's own color otherwise wins. */
+  .md-content a code { color: inherit; }
+  .md-content table { display: block; overflow-x: auto; }
+
+  .caret {
+    display: inline-block; width: 7px; height: 15px; margin-left: 2px;
+    vertical-align: text-bottom; background: var(--primary);
+    animation: blink 0.9s step-start infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .caret { animation: none; } }
+}

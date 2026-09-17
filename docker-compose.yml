@@ -1,0 +1,174 @@
+# Cairn — the whole stack, locally.
+#
+#   docker compose up -d --build     # brain on :8300, plus db, S3 emulation
+#   docker compose up -d db          # just Postgres, if you run the server yourself
+#   docker compose up -d steel-api   # add this only for WhatsApp / LinkedIn
+#   docker compose logs -f brain
+#
+# Every value below has a working default, so a cold checkout comes up with no
+# .env at all. Provider keys are read from your environment or .env if present
+# and simply stay empty otherwise — with none set, the brain resolves to an
+# Ollama on the host (see OLLAMA_BASE below) and costs nothing to run.
+#
+# Volumes worth knowing about:
+#   brain2-wikis   THE ARTIFACT. Generated articles live here — back it up.
+#                  Losing it means paying to regenerate every article.
+#   brain2-clones  Disposable full git clones; rebuilt by re-cloning.
+# Everything else is a cache and regenerates.
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_brain}
+    volumes:
+      - brain2-pgdata:/var/lib/postgresql/data
+    ports:
+      # Host access is optional (e.g. a GUI client) — nothing in this stack
+      # needs it. Deliberately not 5432 so it cannot collide with
+      # a native Postgres on 5432, so both can run at once.
+      - "${POSTGRES_PORT:-5434}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-ai_brain}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # S3 emulation for local dev — no AWS account needed. The brain service
+  # below points S3_ENDPOINT here by default, so storage.push()/pull() and
+  # the citation-history (bucket versioning) story are exercisable from a
+  # cold checkout with zero cloud credentials.
+  localstack:
+    image: localstack/localstack:3
+    environment:
+      SERVICES: s3
+      DEFAULT_REGION: us-east-1
+    ports:
+      - "${V2_LOCALSTACK_PORT:-4566}:4566"
+    volumes:
+      - brain2-localstack:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
+    restart: unless-stopped
+
+  brain:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-ai_brain}
+
+      # BYOK: whichever of these is set wins, in the order server/llm.py
+      # documents. All empty is a valid configuration — the brain then uses
+      # the Ollama below and never asks for a key.
+      LLM_PROVIDER: ${LLM_PROVIDER:-}
+      LLM_MODEL: ${LLM_MODEL:-}
+      LLM_BASE: ${LLM_BASE:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+
+      # host.docker.internal reaches an Ollama running on the host from inside
+      # the container, which is where it almost always runs.
+      OLLAMA_BASE: ${OLLAMA_BASE:-http://host.docker.internal:11434}
+
+      # Article generation speaks the OpenAI shape only. Unset = use the
+      # provider above (skipped automatically when that provider is Claude).
+      ABSORB_BASE: ${ABSORB_BASE:-}
+      ABSORB_API_KEY: ${ABSORB_API_KEY:-}
+      ABSORB_MODEL: ${ABSORB_MODEL:-}
+
+      # Personal access token for the GitHub connector. No org-specific
+      # default — bring your own repo and your own token.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+
+      WIKI_ROOTS: /app/wiki
+      REPO_LOCAL_ROOTS: ""
+      SOURCES_DIR: /data/sources
+      REPO_MAX_TRACKED: ${REPO_MAX_TRACKED:-20}
+      REPO_MAX_SIZE_MB: ${REPO_MAX_SIZE_MB:-2000}
+      REPO_DISK_BUDGET_MB: ${REPO_DISK_BUDGET_MB:-20000}
+
+      # dev bypasses auth entirely — the right default for a single-user
+      # local tool. Flip to google + fill these in only if you actually
+      # want the OAuth login screen.
+      AUTH_MODE: ${AUTH_MODE:-dev}
+      # Pipeline screen: paid, hours-long Drive/Chat runs. Off unless set.
+      DEV_UI: ${DEV_UI:-}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      ALLOWED_DOMAIN: ${ALLOWED_DOMAIN:-}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me}
+
+      # Wired to the localstack service above by default — S3 backing is ON
+      # out of the box in this stack, unlike V1's (unset = disabled). Point
+      # these at real AWS instead if you want a durable non-local bucket.
+      S3_BUCKET: ${S3_BUCKET:-cairn-dev}
+      S3_PREFIX: ${S3_PREFIX:-dev}
+      AWS_REGION: ${AWS_REGION:-us-east-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://localstack:4566}
+
+
+      # Browser connectors (WhatsApp only, per the V2 design — opt-in, not
+      # default). Steel is still optional: the brain starts fine without it,
+      # WhatsApp just reports "browser down" until steel-api is up.
+      STEEL_BASE_URL: http://steel-api:3000
+      STEEL_WS_URL: ws://steel-api:3000
+      STEEL_VIEWER_BASE_URL: ${STEEL_VIEWER_BASE_URL:-http://localhost:3001}
+      WHATSAPP_GROUPS: ${WHATSAPP_GROUPS:-}
+      WHATSAPP_SINCE: ${WHATSAPP_SINCE:-}
+      WHATSAPP_DATE_ORDER: ${WHATSAPP_DATE_ORDER:-DMY}
+      BROWSER_LLM_MODEL: ${BROWSER_LLM_MODEL:-openai/gpt-oss-120b}
+      CONNECTOR_SYNC_INTERVAL_MIN: ${CONNECTOR_SYNC_INTERVAL_MIN:-0}
+    volumes:
+      - brain2-wikis:/data/wikis
+      - brain2-sources:/data/sources
+      - brain2-clones:/data/clones
+      - brain2-var:/app/var
+    ports:
+      # Distinct from V1's 8300, so both can run at once.
+      - "${V2_PORT:-8301}:8300"
+    restart: unless-stopped
+
+  # Optional: only needed if you enable the WhatsApp connector.
+  steel-api:
+    image: ghcr.io/steel-dev/steel-browser:latest
+    pull_policy: if_not_present
+    restart: unless-stopped
+    init: true
+    environment:
+      DOMAIN: "${STEEL_PUBLIC_HOST:-127.0.0.1}:${V2_STEEL_API_PORT:-3001}"
+    ports:
+      - "${V2_STEEL_API_PORT:-3001}:3000"
+    volumes:
+      - brain2-steel-cache:/app/.cache
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  brain2-pgdata:
+  brain2-localstack:
+  brain2-sources:
+  brain2-wikis:
+  brain2-clones:
+  brain2-var:
+  brain2-steel-cache:

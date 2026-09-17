@@ -1,0 +1,36 @@
+# Secrets — provider API keys, SYNC_TOKEN, SESSION_SECRET, DATABASE_URL live here.
+.env
+.env.local-backup
+
+# Runtime state: corpus indexes and sync manifests. Git is the only storage of
+# knowledge; everything under var/ is a disposable cache.
+var/
+
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+web2/dist/
+
+# OAuth refresh tokens and browser session state (see CONNECTORS.md).
+secrets/
+
+# Wiki pipeline scratch: entries/queue are derived and disposable, regenerated
+# by ingest. sources/ and wiki/ ARE committed.
+raw/
+
+# Generated wikis ARE the artifact and are committed — no ignore rule for them
+# on purpose. Clones are not: they live under var/ (already ignored) and are
+# rebuilt by cloning.
+
+# macOS noise.
+.DS_Store
+
+# graphify knowledge-graph output: regenerate locally with `graphify update .`
+graphify-out/
+
+# SDD/worktree scratch — never committed, never shared across branches
+.worktrees/
+
+# Brainstorming visual-companion scratch (mockups shown in-browser during design)
+.superpowers/
