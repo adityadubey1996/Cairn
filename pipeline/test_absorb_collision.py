@@ -32,21 +32,21 @@ related: []
 
 # Thing
 
-This article is about package {label}.
+This article is about package {label}. [code: {file}@abc1234]
 
-Package {label} provides a small capability used elsewhere in the system.
+Package {label} provides a small capability used elsewhere in the system. [code: {file}@abc1234]
 
-It has one file that implements the {label} behavior directly.
+It has one file that implements the {label} behavior directly. [code: {file}@abc1234]
 
 [code: {file}@abc1234]
 
-There is no further detail recorded about this unit yet.
+There is no further detail recorded about this unit yet. [gap: further detail]
 
-The remaining behavior of {label} is unexplored in this pass.
+The remaining behavior of {label} is unexplored in this pass. [gap: remaining behavior]
 
-Future absorbs may expand on this article as more of the package is read.
+Future absorbs may expand on this article as more of the package is read. [gap: additional context]
 
-This line exists to satisfy the minimum length floor for unknown-type articles.
+This line exists to satisfy the minimum length floor for unknown-type articles. [gap: further evidence]
 """
 
 

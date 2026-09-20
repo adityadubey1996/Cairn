@@ -6,7 +6,6 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { ConnectorIcon } from '@/components/ConnectorIcon'
-import { GranularityPicker } from '@/components/GranularityPicker'
 
 // The one connector connection flow (spec §6), used by onboarding's grid and
 // by Connect > Health. It is a panel, not a page: the host renders it inline
@@ -27,16 +26,6 @@ import { GranularityPicker } from '@/components/GranularityPicker'
 const TOKEN_HELP = {
   github: { href: 'https://github.com/settings/tokens', label: 'Create a token on GitHub' },
   jira: { href: 'https://id.atlassian.com/manage-profile/security/api-tokens', label: 'Create an API token on Atlassian' },
-}
-
-// Stand-in figures until the history dry-run endpoint exists — the picker's own
-// caption already says the estimate is on your key's rate and charges nothing.
-const ESTIMATES = {
-  monthly: { checkpoints: 24, tokens: '1.2M', cost: '$3.60' },
-  weekly: { checkpoints: 104, tokens: '5.1M', cost: '$15.30' },
-  quarterly: { checkpoints: 8, tokens: '0.4M', cost: '$1.20' },
-  tags: { checkpoints: 17, tokens: '0.9M', cost: '$2.70' },
-  every: { checkpoints: 1284, tokens: '61M', cost: '$183.00' },
 }
 
 const groupOf = (kind) => api.CONNECTOR_CATALOGUE.find((g) => g.items.some((i) => i.kind === kind))
@@ -67,7 +56,8 @@ export function ConnectFlow({
   const [token, setToken] = useState('')
   const [site, setSite] = useState('')
   const [email, setEmail] = useState('')
-  const [history, setHistory] = useState({ mode: 'snapshot', granularity: 'monthly' })
+  const [urls, setUrls] = useState('')
+  const [maxItems, setMaxItems] = useState('20')
   const aliveRef = useRef(true)
   const timerRef = useRef(null)
 
@@ -89,43 +79,41 @@ export function ConnectFlow({
   // A different connector means a different flow — never inherit the last one's
   // half-typed token or its error.
   useEffect(() => {
-    setStatus('form'); setFailure(null); setToken(''); setSite(''); setEmail('')
-    setHistory({ mode: 'snapshot', granularity: 'monthly' })
+    setStatus('form'); setFailure(null); setToken(''); setSite(''); setEmail(''); setUrls(''); setMaxItems('20')
   }, [kind])
 
   const wait = (ms) => new Promise((resolve) => { timerRef.current = setTimeout(resolve, ms) })
 
   const ready = kind === 'github'
-    ? token.trim().length > 0
+    ? site.trim().length > 0
     : kind === 'jira'
       ? Boolean(site.trim() && email.trim() && token.trim())
-      : true
+      : kind === 'links' ? urls.trim().length > 0 : true
 
   const connect = async () => {
     setStatus('connecting')
     setFailure(null)
     try {
+      let connected = null
       if (onAuthorize) {
-        await onAuthorize({ kind, projectId, token, site, email })
+        const parsedUrls = urls.split(/\r?\n/).map((u) => u.trim()).filter(Boolean)
+        if (kind === 'links' && parsedUrls.some((url) => {
+          try { return !['http:', 'https:'].includes(new URL(url).protocol) } catch { return true }
+        })) throw new Error('Enter complete http:// or https:// URLs, one per line.')
+        connected = await onAuthorize({ kind, projectId, token, site, email, urls: parsedUrls, maxItems })
       } else {
         if (api.isLive) throw new Error('The provider hand-off is not wired to the backend yet.')
         await wait(reconsent ? 350 : 900)
         if (forcedState() === 'error') throw new Error('The provider rejected the request.')
       }
       if (!aliveRef.current) return
-      if (kind === 'github') { setStatus('history'); return }
       setStatus('done')
-      onConnected?.({ kind, projectId })
+      onConnected?.({ kind, projectId, ...connected })
     } catch (e) {
       if (!aliveRef.current) return
       setFailure(e.message)
       setStatus('error')
     }
-  }
-
-  const finishHistory = () => {
-    setStatus('done')
-    onConnected?.({ kind, projectId, mode: history.mode, granularity: history.granularity })
   }
 
   const projectLine = projects.find((p) => p.id === projectId)?.name ?? '—'
@@ -176,23 +164,6 @@ export function ConnectFlow({
         </div>
       )}
 
-      {status === 'history' && (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-2 text-[13px] text-success">
-            <Check size={14} aria-hidden />
-            Connected. How much history do you want?
-          </div>
-          <GranularityPicker
-            mode={history.mode} granularity={history.granularity}
-            estimate={history.mode === 'history' ? ESTIMATES[history.granularity] : null}
-            onChange={setHistory} onConfirm={finishHistory}
-          />
-          {history.mode === 'snapshot' && (
-            <div><Button size="sm" onClick={finishHistory}>Start import</Button></div>
-          )}
-        </div>
-      )}
-
       {(status === 'form' || status === 'error') && (
         <>
           {auth === 'oauth' && (
@@ -202,6 +173,11 @@ export function ConnectFlow({
                   ? `You’re already signed in to ${provider}. This is a one-click re-consent — ${name} just gets added to the access you already granted.`
                   : `You’ll finish this on ${provider}’s own sign-in page, in this browser. We never see your password, and nothing is read until you approve it there.`}
               </p>
+              <label className="flex max-w-xs flex-col gap-1.5 text-xs text-muted-foreground">Maximum items per sync
+                <input type="number" min="1" max="10000" value={maxItems} placeholder="No limit"
+                  onChange={(e) => setMaxItems(e.target.value)} className="rounded-md border border-border bg-background px-2.5 py-2 text-[13px] text-foreground" />
+                <span>Start with 20 items to inspect extraction before a larger import. Clear for no limit.</span>
+              </label>
               <div>
                 <Button size="sm" onClick={connect}>
                   Continue to {provider}
@@ -210,6 +186,15 @@ export function ConnectFlow({
               </div>
             </div>
           )}
+
+          {kind === 'links' && <div className="flex flex-col gap-3">
+            <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">Website URLs, one per line
+              <textarea rows={5} value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="https://example.com/article"
+                className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-[13px] text-foreground outline-none focus:border-primary" />
+            </label>
+            <p className="text-xs text-muted-foreground">Cairn fetches each page and stores its extracted text. Review the files before absorption, or enable automation in Pipeline.</p>
+            <div><Button size="sm" disabled={!ready} onClick={connect}>Connect and fetch pages</Button></div>
+          </div>}
 
           {auth === 'browser' && (
             <div className="flex flex-col gap-2.5">
@@ -223,8 +208,9 @@ export function ConnectFlow({
 
           {kind === 'github' && (
             <div className="flex flex-col gap-3">
+              <Field id="github-repo" label="Repository URL" value={site} onChange={setSite} placeholder="https://github.com/owner/repo" />
               <Field
-                id="github-token" label="Personal access token" type="password"
+                id="github-token" label="Personal access token (optional for public repos)" type="password"
                 value={token} onChange={setToken} placeholder="ghp_…"
                 hint="Read-only repo access is all this needs — no write scopes."
               />

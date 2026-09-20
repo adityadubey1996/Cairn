@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { ArrowLeft, BookPlus, ChevronDown, ChevronRight, ExternalLink, FileSearch, Folder, Search, Sparkles, TriangleAlert, Upload, X } from 'lucide-react'
+import { ArrowLeft, BookPlus, ChevronDown, ChevronRight, ExternalLink, FileSearch, Folder, RefreshCw, RotateCcw, Search, Sparkles, Square, TriangleAlert, Upload, X } from 'lucide-react'
 import * as api from '@/api'
 import { cn } from '@/lib/utils'
 import { usePipelineRun } from '@/lib/usePipelineRun'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ContentResults } from '@/components/ContentResults'
 import { ConnectorIcon } from '@/components/ConnectorIcon'
 import { EmptyState } from '@/components/EmptyState'
@@ -313,17 +312,17 @@ export function SourceViewer({ source, onClose, embedded = false, projectId }) {
     if (!source.path) { setDoc(null); setState('nopath'); return }
     let cancelled = false
     setState('loading')
-    api.sourceContent({ path: source.path })
+    api.sourceContent({ path: source.path, etag: source.etag ?? '' })
       .then((got) => { if (!cancelled) { setDoc(got); setState('ready') } })
       .catch((e) => { if (!cancelled) { setDoc(e); setState('error') } })
     return () => { cancelled = true }
-  }, [source.path])
+  }, [source.path, source.etag])
 
   const openRaw = async () => {
     const path = tab === 'original' ? source.originalPath : source.path
     if (!path) return
     try {
-      const { url } = await api.viewSource({ path })
+      const { url } = await api.viewSource({ path, etag: tab === 'extracted' ? source.etag ?? '' : '' })
       window.open(url, '_blank', 'noreferrer')
     } catch (e) {
       // An unhandled rejection here is invisible except in the console, and
@@ -405,7 +404,7 @@ export function SourceViewer({ source, onClose, embedded = false, projectId }) {
   )
 }
 
-export function Sources({ projectId, forced, onNavigate }) {
+export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFiles }) {
   const [input, setInput] = useState('')
   const [q, setQ] = useState('')
   const [kind, setKind] = useState(null)
@@ -415,6 +414,7 @@ export function Sources({ projectId, forced, onNavigate }) {
   const [matchTotal, setMatchTotal] = useState(0)
   const [kinds, setKinds] = useState([])
   const [status, setStatus] = useState(null)   // null = both, 'failed' = only failures
+  const [absorptionState, setAbsorptionState] = useState(null)
   const [failedCount, setFailedCount] = useState(0)
   const [connections, setConnections] = useState([])
   const [connectionId, setConnectionId] = useState(null)
@@ -436,9 +436,10 @@ export function Sources({ projectId, forced, onNavigate }) {
   const [writeUpRunId, setWriteUpRunId] = useState(null)
   const [queueBusy, setQueueBusy] = useState(false)
   const [queueError, setQueueError] = useState(null)
-  const [confirming, setConfirming] = useState(false)
   const [mode, setMode] = useState('name')   // name · contents
   const [failureReasons, setFailureReasons] = useState([])
+
+  useEffect(() => { setReload((n) => n + 1) }, [refreshKey])
 
   useEffect(() => {
     const timer = setTimeout(() => setQ(input.trim()), 180)
@@ -509,7 +510,8 @@ export function Sources({ projectId, forced, onNavigate }) {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    api.listSources({ projectId, q, kind, status, connectionId, group })
+    setError(null)
+    api.listSources({ projectId, q, kind, status, connectionId, group, absorptionState })
       .then(({ rows: found, total, cursor: next }) => {
         if (cancelled) return
         setRows(found)
@@ -519,27 +521,33 @@ export function Sources({ projectId, forced, onNavigate }) {
       .catch((e) => !cancelled && setError(e))
       .finally(() => !cancelled && setLoading(false))
     return () => { cancelled = true }
-  }, [projectId, q, kind, status, connectionId, group, reload])
+  }, [projectId, q, kind, status, connectionId, group, absorptionState, reload])
 
   // Changing the filter changes what "select all" would have meant, so a
   // selection carried across it could send ids the user can no longer see.
   useEffect(() => { setCursor(null); setExpandedId(null); setViewing(null); setSelected(new Set()) },
-            [projectId, q, kind, status, connectionId, group])
+            [projectId, q, kind, status, connectionId, group, absorptionState])
 
   // The wiki queue is project-wide, not per filter — it is what the Write up
   // button would spend on, wherever in the list those rows happen to sit.
   const refreshQueue = useCallback(() => {
-    api.wikiQueue(projectId)
-      .then((got) => {
+    Promise.all([api.wikiQueue(projectId), api.pipelineStatus(projectId)])
+      .then(([got, overview]) => {
         setQueue(got)
         // Rejoins a write-up already in flight, so a reload mid-run shows the
         // run instead of a button that would 409.
-        if (got.runId) setWriteUpRunId(got.runId)
+        const active = overview.active_runs?.find((row) => row.phase === 'absorb')
+        if (got.runId || active?.id) setWriteUpRunId(got.runId || active.id)
       })
       .catch(() => {})
   }, [projectId])
 
   useEffect(refreshQueue, [refreshQueue, reload])
+
+  useEffect(() => {
+    const timer = setInterval(refreshQueue, 5000)
+    return () => clearInterval(timer)
+  }, [refreshQueue])
 
   const { running: writingUp, pct: writeUpPct, run: writeUpRun } =
     usePipelineRun(writeUpRunId, {
@@ -548,7 +556,11 @@ export function Sources({ projectId, forced, onNavigate }) {
       // The reason has to survive clearing the id the poll was following.
       onFinish: (row) => {
         setWriteUpRunId(null)
-        if (row.status !== 'ok') setQueueError(row.error || `the write-up ${row.status}`)
+        if (row.status !== 'ok') setQueueError(row.error || ({
+          partial: 'Absorption finished with failed files. Review their errors and retry those files.',
+          stopped: 'Absorption stopped. Unfinished files remain queued.',
+          interrupted: 'The worker was interrupted. Unfinished files remain queued for retry.',
+        }[row.status] ?? `Absorption ${row.status}. Open Pipeline for the run log.`))
         refreshQueue()
         setReload((n) => n + 1)
       },
@@ -567,10 +579,9 @@ export function Sources({ projectId, forced, onNavigate }) {
     setQueueError(null)
     try {
       await api.queueSources({ projectId, ids, queued })
-      // Patched in place rather than refetching: a refetch would reset paging
-      // to the first page and throw away however far the user had loaded.
-      const touched = new Set(ids)
-      setRows((prev) => prev.map((r) => (touched.has(r.id) ? { ...r, queued } : r)))
+      // The server may skip excluded or failed files, and unqueueing does not
+      // undo prior absorption. Read its resulting state instead of guessing.
+      setReload((n) => n + 1)
       setSelected(new Set())
       refreshQueue()
     } catch (e) {
@@ -581,7 +592,6 @@ export function Sources({ projectId, forced, onNavigate }) {
   }
 
   const startWriteUp = async () => {
-    setConfirming(false)
     setQueueBusy(true)
     setQueueError(null)
     try {
@@ -594,6 +604,32 @@ export function Sources({ projectId, forced, onNavigate }) {
     }
   }
 
+  const changePolicy = async (absorptionPolicy) => {
+    setQueueBusy(true); setQueueError(null)
+    try {
+      await api.setSourcePolicy({ projectId, ids: [...selected], absorptionPolicy })
+      setSelected(new Set()); setReload((n) => n + 1)
+    } catch (e) { setQueueError(e.message) }
+    finally { setQueueBusy(false) }
+  }
+
+  const retrySelected = async () => {
+    setQueueBusy(true); setQueueError(null)
+    try {
+      const ids = rows.filter((r) => selected.has(r.id) && (r.status === 'failed' || r.absorptionState === 'failed')).map((r) => r.id)
+      await api.retrySources({ projectId, ids })
+      setSelected(new Set()); setReload((n) => n + 1)
+    } catch (e) { setQueueError(e.message) }
+    finally { setQueueBusy(false) }
+  }
+
+  const stopWriteUp = async () => {
+    setQueueBusy(true); setQueueError(null)
+    try { await api.stopPipelineRun(writeUpRunId) }
+    catch (e) { setQueueError(e.message) }
+    finally { setQueueBusy(false) }
+  }
+
   // Leaving a connector leaves its groups behind with it.
   useEffect(() => { setGroup(null) }, [projectId, kind])
 
@@ -603,9 +639,10 @@ export function Sources({ projectId, forced, onNavigate }) {
     if (!expandedId) return
     let cancelled = false
     setArticles(null)
-    api.sourceArticles(expandedId).then((found) => !cancelled && setArticles(found))
+    api.sourceArticles(expandedId, projectId).then((found) => !cancelled && setArticles(found))
+      .catch((e) => { if (!cancelled) { setArticles([]); setQueueError(e.message) } })
     return () => { cancelled = true }
-  }, [expandedId])
+  }, [expandedId, projectId])
 
   // Appends rather than replacing, and carries the cursor forward. Keyset
   // paging means rows landing at the top while a scrape runs cannot shift the
@@ -614,7 +651,7 @@ export function Sources({ projectId, forced, onNavigate }) {
     if (!cursor || loadingMore) return
     setLoadingMore(true)
     try {
-      const { rows: more, cursor: next } = await api.listSources({ projectId, q, kind, status, connectionId, group, cursor })
+      const { rows: more, cursor: next } = await api.listSources({ projectId, q, kind, status, connectionId, group, cursor, absorptionState })
       setRows((prev) => [...prev, ...more])
       setCursor(next ?? null)
     } catch (e) {
@@ -632,12 +669,12 @@ export function Sources({ projectId, forced, onNavigate }) {
 
   const retry = () => { setError(null); setReload((n) => n + 1) }
   const clearFilters = () =>
-    { setInput(''); setQ(''); setKind(null); setStatus(null); setConnectionId(null); setGroup(null) }
+    { setInput(''); setQ(''); setKind(null); setStatus(null); setConnectionId(null); setGroup(null); setAbsorptionState(null) }
 
   const connByAtId = Object.fromEntries(connections.map((c) => [c.id, c.name]))
   const state = forced ?? (loading ? 'loading' : error ? 'error' : 'ready')
   const filtered = forced === 'empty' ? [] : rows
-  const filtering = !!q || !!kind || !!status || !!connectionId || !!group
+  const filtering = !!q || !!kind || !!status || !!connectionId || !!group || !!absorptionState
   // Groups replace the flat list only at the top level of a grouped connector:
   // once you are inside one, the rows are the point.
   // Contents mode replaces the list wholesale rather than adding to it: a name
@@ -647,13 +684,16 @@ export function Sources({ projectId, forced, onNavigate }) {
   const listState = searchingContents ? 'hidden' : state
   const unit = GROUP_UNIT[kind]
   const tree = TREE_KINDS[kind]
-  const showGroups = !!unit && !tree && !group && !!groups.length
+  const showGroups = !!unit && !tree && !group && !!groups.length && !absorptionState
   // A tree root has no loose files: every file is inside a folder, or inside
   // the pseudo-folder for the ones Drive will not tell us the location of.
-  const showFiles = !showGroups && (!tree || !!group)
+  const showFiles = !showGroups && (!tree || !!group || !!absorptionState)
   const nothingToShow = !showGroups && !subfolders.length && (!showFiles || !filtered.length)
   const pageRows = filtered
-  const selectableRows = pageRows.filter((s) => s.status !== 'failed')
+  const selectableRows = pageRows
+  const selectedRows = rows.filter((s) => selected.has(s.id))
+  const selectedFailed = selectedRows.some((s) => s.status === 'failed' || s.absorptionState === 'failed')
+  const selectedUnavailable = selectedRows.some((s) => s.status === 'failed' || s.absorptionPolicy === 'exclude')
   const allSelected = selectableRows.length > 0
     && selectableRows.every((s) => selected.has(s.id))
   const someSelected = selectableRows.some((s) => selected.has(s.id))
@@ -702,7 +742,7 @@ export function Sources({ projectId, forced, onNavigate }) {
             // Files have no account to tell apart, so the kind chip above is
             // already the whole story — a second chip per upload connection
             // would just repeat it.
-            .filter((c) => c.kind !== 'upload')
+            .filter((c) => c.kind !== 'upload' && c.kind !== 'github')
             .filter((c) => connections.filter((o) => o.kind === c.kind).length > 1)
             .map((c) => (
               <FilterChip
@@ -727,17 +767,48 @@ export function Sources({ projectId, forced, onNavigate }) {
         </div>
       </div>
 
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          Absorption
+          <select value={absorptionState ?? ''} onChange={(e) => setAbsorptionState(e.target.value || null)}
+            className="rounded-md border border-border bg-card px-2 py-1.5 text-foreground">
+            <option value="">All states</option>
+            <option value="extracted">Extracted, awaiting decision</option>
+            <option value="queued">Queued</option>
+            <option value="absorbing">Absorbing</option>
+            <option value="absorbed">Absorbed</option>
+            <option value="failed">Failed</option>
+          </select>
+        </label>
+        <p className="hidden text-xs text-muted-foreground lg:block">Preview a file, then choose whether it belongs in your wiki.</p>
+        <Button className="ml-auto" variant="ghost" size="xs" onClick={retry} disabled={loading}>
+          <RefreshCw size={12} aria-hidden /> Refresh
+        </Button>
+      </div>
+
       {/* Sticky because the list is long and the count it carries is the
           answer to "what am I about to do" — scrolling past it loses that. */}
       {selected.size > 0 && (
         <div className="sticky top-0 z-10 mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-card px-3 py-2">
           <span className="text-[12.5px]">{selected.size.toLocaleString()} selected</span>
-          <Button size="xs" disabled={queueBusy} onClick={() => setQueued(true)}>
-            <BookPlus size={12} aria-hidden /> Add to wiki
+          <Button size="xs" disabled={queueBusy || selectedUnavailable} onClick={() => setQueued(true)}
+            title={selectedUnavailable ? 'Failed or excluded files cannot be queued. Change their policy or retry extraction first.' : undefined}>
+            <BookPlus size={12} aria-hidden /> Queue for absorption
           </Button>
           <Button variant="outline" size="xs" disabled={queueBusy} onClick={() => setQueued(false)}>
-            Remove from wiki
+            Unqueue
           </Button>
+          {selectedFailed && <Button variant="outline" size="xs" disabled={queueBusy} onClick={retrySelected}>
+            <RotateCcw size={12} aria-hidden /> Retry failed
+          </Button>}
+          <select aria-label="Absorption policy for selected files" value="" disabled={queueBusy}
+            onChange={(e) => { if (e.target.value) changePolicy(e.target.value) }}
+            className="rounded-md border border-border bg-card px-2 py-1 text-xs">
+            <option value="" disabled>Set file policy…</option>
+            <option value="inherit">Follow connector automation</option>
+            <option value="manual">Absorb only when I queue it</option>
+            <option value="exclude">Exclude from absorption</option>
+          </select>
           <Button variant="ghost" size="xs" className="ml-auto text-muted-foreground"
                   onClick={() => setSelected(new Set())}>
             Clear
@@ -750,8 +821,8 @@ export function Sources({ projectId, forced, onNavigate }) {
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-[12.5px]">
               {writingUp
-                ? `Writing up · ${writeUpRun?.items_written ?? 0}/${writeUpRun?.items_seen ?? queue?.queued ?? 0}`
-                : `${queue.queued.toLocaleString()} queued for the wiki`}
+                ? `Absorbing · ${writeUpRun?.items_written ?? 0}/${writeUpRun?.items_seen ?? queue?.queued ?? 0}`
+                : `${queue.queued.toLocaleString()} ${queue.queued === 1 ? 'file' : 'files'} queued for absorption`}
             </span>
             <span className="text-[11.5px] text-muted-foreground">
               ~{queue?.tokens?.toLocaleString() ?? '—'} tokens · ~{minutes(queue?.seconds)}
@@ -759,10 +830,13 @@ export function Sources({ projectId, forced, onNavigate }) {
             </span>
             {!writingUp && (
               <Button size="xs" className="ml-auto" disabled={queueBusy}
-                      onClick={() => setConfirming(true)}>
-                <Sparkles size={12} aria-hidden /> Write up
+                      onClick={startWriteUp}>
+                <Sparkles size={12} aria-hidden /> Absorb queued
               </Button>
             )}
+            {writingUp && <Button size="xs" variant="outline" className="ml-auto" disabled={queueBusy} onClick={stopWriteUp}>
+              <Square size={12} aria-hidden /> Stop run
+            </Button>}
           </div>
           {writingUp && <Progress className="mt-2" value={writeUpPct} label="Write-up progress" />}
         </div>
@@ -794,17 +868,6 @@ export function Sources({ projectId, forced, onNavigate }) {
           <span>{queueError}</span>
         </p>
       )}
-
-      <ConfirmDialog
-        open={confirming}
-        title={`Write up ${queue?.queued ?? 0} source${queue?.queued === 1 ? '' : 's'}?`}
-        detail={`This is the only step that costs money: roughly ${queue?.tokens?.toLocaleString() ?? '—'} `
-               + `tokens and about ${minutes(queue?.seconds)} of model time. It runs in the `
-               + `background and you can stop it from Connect > Pipeline.`}
-        confirmLabel="Write up"
-        onConfirm={startWriteUp}
-        onCancel={() => setConfirming(false)}
-      />
 
       {group && (tree || unit) && (
         <nav aria-label="Folder path" className="mb-1 flex flex-wrap items-center gap-1.5 text-[11.5px] text-muted-foreground">
@@ -863,9 +926,9 @@ export function Sources({ projectId, forced, onNavigate }) {
           <EmptyState
             icon={FileSearch}
             title="Nothing here yet."
-            detail="Connect a source on Health, or add files from your computer."
+            detail="Choose an app in Connect, or add files from your computer."
             action={
-              <Button variant="outline" size="sm" onClick={() => onNavigate?.('files')}>
+              <Button variant="outline" size="sm" onClick={() => onAddFiles ? onAddFiles() : onNavigate?.('files')}>
                 <Upload size={13} aria-hidden /> Add files
               </Button>
             }
@@ -881,10 +944,10 @@ export function Sources({ projectId, forced, onNavigate }) {
       )}
 
       {state === 'ready' && viewing && (
-        <SourceViewer source={viewing} onClose={() => setViewing(null)} />
+        <SourceViewer source={viewing} projectId={projectId} onClose={() => setViewing(null)} />
       )}
 
-      {listState === 'ready' && !!subfolders.length && (
+      {listState === 'ready' && !absorptionState && !!subfolders.length && (
         <>
           <div className="flex items-center gap-2 border-b border-border pb-1.5 text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
             <span>Folder</span>
@@ -944,7 +1007,6 @@ export function Sources({ projectId, forced, onNavigate }) {
                   <input
                     type="checkbox" className="ml-1 size-3.5 shrink-0 accent-[var(--primary)]"
                     aria-label={`Select ${s.name}`}
-                    disabled={s.status === 'failed'}
                     checked={selected.has(s.id)}
                     onChange={() => toggleSelected(s.id)}
                   />

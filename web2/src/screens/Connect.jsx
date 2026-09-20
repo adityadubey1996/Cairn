@@ -41,9 +41,11 @@ export function Connect({ projectId, projectName, onNavigate, target }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-baseline gap-3 px-6 pt-4">
-        <h1 className="text-[15px] font-semibold">Connect</h1>
-        <span className="text-[12.5px] text-muted-foreground">{projectName ?? '—'}</span>
+      <header className="px-6 pt-5">
+        <h1 className="text-[20px] font-semibold tracking-[-0.02em]">Connections</h1>
+        <p className="mt-0.5 text-[12.5px] text-muted-foreground">
+          Manage what enters {projectName ?? 'this project'} and where it goes next.
+        </p>
       </header>
 
       {/* Deliberately lighter than the sidebar's TabNav, and scrolling rather
@@ -57,12 +59,13 @@ export function Connect({ projectId, projectName, onNavigate, target }) {
           <Health
             projectId={projectId} projectName={projectName}
             forced={forced} onGoFiles={() => onNavigate?.('files')}
+            onNavigate={onNavigate}
           />
         )}
         {sub === 'sources' && <Sources projectId={projectId} forced={forced} onNavigate={onNavigate} />}
         {sub === 'timeline' && <Timeline projectId={projectId} projectName={projectName} forced={forced} />}
         {sub === 'cost' && <Cost onGoHealth={() => setSub('health')} />}
-        {sub === 'pipeline' && <Pipeline projectId={projectId} allowPaid={devUi} />}
+        {sub === 'pipeline' && <Pipeline projectId={projectId} onNavigate={onNavigate} />}
       </div>
     </div>
   )

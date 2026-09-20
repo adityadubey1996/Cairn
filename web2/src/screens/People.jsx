@@ -220,12 +220,12 @@ export function People({ projectId, projectName }) {
     let cancelled = false
     setEventsLoading(true)
     setEventsError(null)
-    api.personEvents(selectedId)
+    api.personEvents(selectedId, projectId)
       .then((rows) => !cancelled && setEvents(rows))
       .catch((e) => !cancelled && setEventsError(e))
       .finally(() => !cancelled && setEventsLoading(false))
     return () => { cancelled = true }
-  }, [selectedId, reload])
+  }, [selectedId, projectId, reload])
 
   const sourceById = useMemo(() => new Map(sources.map((s) => [s.id, s])), [sources])
 

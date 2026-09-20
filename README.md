@@ -15,19 +15,21 @@ and no API key anywhere, it works and costs nothing.
 
 ```bash
 git clone https://github.com/adityadubey1996/Cairn.git && cd Cairn
-docker compose up -d --build     # http://localhost:8300
+docker compose up -d --build     # http://localhost:8301
 ```
 
 ---
 
 ## The one idea everything else follows
 
-> **Git is the only place knowledge lives. Everything else is a disposable copy.**
+> **Knowledge is stored as inspectable source files and Markdown articles.**
 
-The knowledge base is a folder of ordinary markdown files, committed to a repo.
-Cairn's index, its database and its clones are all caches — delete them and
-they rebuild. Nothing of value lives only inside Cairn, which is what makes it
-safe to throw away, and what stops it becoming another silo.
+The knowledge base is a folder of ordinary Markdown files. Generated articles
+are published to disk after validation; they are not automatically committed to
+Git. Back up sources, immutable source revisions, raw inbox metadata, generated
+wikis, credentials and Postgres. The database holds file policies, schedules,
+job history and conversations; it is not a disposable cache. Search indexes can
+be rebuilt.
 
 An article is written *about* something: what a module does, why it is built
 that way, what is known, what is disputed, what nobody knows yet.
@@ -88,16 +90,25 @@ client or token. Nothing is proxied through a service.
 | GitHub repos | nothing public · a read-only PAT for private |
 | Google Drive | your own Google OAuth client |
 | Google Chat | the same Google OAuth client |
+| Gmail | the same OAuth client, Gmail API, renewed read-only mail consent |
 | WhatsApp · LinkedIn | Steel browser + which chats to read |
 
-Gmail, Outlook, OneDrive, Teams and Jira appear in the Connect screen **greyed
-out**: they are on the roadmap but have no feeder behind them yet, so they are
-shown as not built rather than offered and then failing.
+Gmail imports complete email conversations, including plain-text/HTML bodies
+and attachment names. Attachment bytes are not downloaded. Google connectors
+currently share one signed-in account; adding a connection does not create
+another independent Google identity. Browser connectors require a working
+Steel session and a manual login.
+
+The Gmail adapter uses the full-thread approach studied in
+[Onyx's Gmail connector](https://github.com/onyx-dot-app/onyx/blob/main/backend/onyx/connectors/gmail/connector.py).
+Cairn has its own adapter and has not integrated Onyx's entire connector
+factory or runtime. Outlook, OneDrive, Teams, Jira, Slack and Confluence remain
+unimplemented; the registry above defines the supported integrations.
 
 Ask the running server what is still missing, instead of guessing:
 
 ```bash
-curl -s localhost:8300/api/connectors/preflight | python3 -m json.tool
+curl -s localhost:8301/api/connectors/preflight | python3 -m json.tool
 ```
 
 It names the exact unset variable per connector. **[CONNECTORS.md](CONNECTORS.md)**
@@ -126,7 +137,10 @@ flowchart LR
    citation? Do the named functions actually appear in the cited files? Drafts
    failing three attempts are quarantined, never published: a confidently wrong
    article is worse than a missing one.
-4. **A human merges.** Nothing enters the knowledge base without that.
+4. **Publish or quarantine.** Passing articles become searchable immediately.
+   Automatic absorption is a per-connection choice; individual files can inherit
+   it, wait for manual selection, or be excluded. Mechanical validation checks
+   format and references, not the truth of every generated claim.
 
 ## How a question gets answered
 
@@ -178,7 +192,8 @@ not cover your question and Cairn is telling you rather than guessing.
 
 - It does **not** answer from the model's general knowledge. No coverage means
   it names the nearest articles it found and stops.
-- It does **not** let unreviewed generated text into the knowledge base.
+- It quarantines drafts that fail structural or citation checks; generated
+  articles are not a substitute for reviewing important claims.
 - It does **not** require anyone reading it to have repo access.
 - It does **not** phone home. No telemetry, no accounts, no vendor key.
 
@@ -189,7 +204,7 @@ not cover your question and Cairn is telling you rather than guessing.
 ### Docker (everything)
 
 ```bash
-docker compose up -d --build     # brain :8300, Postgres, S3 emulation
+docker compose up -d --build     # brain :8301, Postgres, S3 emulation
 docker compose logs -f brain
 ```
 
@@ -212,7 +227,11 @@ retrieval degrades to keyword search rather than breaking.
 ### Tests
 
 ```bash
-.venv/bin/python -m pytest server pipeline -q     # 220 tests, no DB needed
+DATABASE_URL='postgresql://invalid:invalid@127.0.0.1:1/none?connect_timeout=1' \
+S3_BUCKET='' OLLAMA_BASE='' AWS_EC2_METADATA_DISABLED=true \
+  .venv/bin/python -m pytest server pipeline feeders scripts -q
+cd web2 && node --test src/api/live.test.js src/screens/chat/answerLinks.test.js
+cd web2 && npm run build
 ```
 
 The suite is green with no database and no network. Tests that need Postgres
@@ -231,7 +250,7 @@ skip themselves when it is unreachable.
 | `feeders/` | one folder per connector, each exposing `run()` |
 | `pipeline/` | ingest → absorb → validate: how articles get written and checked |
 | `web2/` | the React UI (Vite + Tailwind) |
-| `var/` | indexes and sync state — disposable caches, gitignored |
+| `var/` | local runtime data, source revisions and caches; back up durable data |
 
 **Retrieval:** hybrid search — SQLite FTS5 (BM25) plus one vector per article,
 fused by reciprocal rank — then one-hop wikilink expansion in both directions,
@@ -246,8 +265,10 @@ JWT.
 
 ## Contributing
 
-Adding a connector is a `run()` in `feeders/<name>/sync.py` plus one `REGISTRY`
-entry — the health screen, run history, status and preflight are all generic.
+Adding a connector requires its feeder, registry entry, connection/runner
+wiring, scoped configuration and offline contract tests. Feeders return
+`SyncResult`, so partial failures remain visible and do not advance a sync
+checkpoint. Health and preflight read the shared registry.
 See [CONNECTORS.md](CONNECTORS.md#adding-a-connector).
 
 Two house rules worth knowing before you send a patch: **a name is its

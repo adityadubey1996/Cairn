@@ -13,8 +13,8 @@ dates, so this script manufactures both:
 
 Idempotent: same repo state in, same files out.
 
-    pip install pypdf                 # optional, for .pdf
-    brew install pandoc               # optional, for .docx  (else: pip install markitdown)
+    pip install -r requirements.txt   # Python PDF and Office readers
+    brew install pandoc poppler       # optional preferred DOCX/PDF readers
     python .cursor/skills/wiki/scripts/ingest.py --repo . --out raw/entries
 
 Flags:
@@ -129,6 +129,8 @@ def classify(rel, wikiignore=None):
         return "runtime_contract"
     if ext in PROSE_EXT:
         return "doc"
+    if not ext and Path(p).name.lower() in {'readme', 'license', 'licence', 'changelog', 'authors', 'contributing'}:
+        return 'doc'
     if ext in CODE_EXT:
         return "code"
     if ext in DATA_EXT or ext in {".yml", ".yaml", ".toml", ".ini", ".conf"}:
@@ -212,29 +214,99 @@ def have(cmd):
     return _HAVE_CACHE[cmd]
 
 
+def _extract_office(path: Path):
+    """Text, tables, and spreadsheet formulas; never execute document content."""
+    if path.suffix.lower() == ".docx":
+        from docx import Document
+        from docx.table import Table
+        chunks = []
+        for block in Document(path).iter_inner_content():
+            if isinstance(block, Table):
+                chunks.append("\n".join("\t".join(cell.text for cell in row.cells)
+                                         for row in block.rows))
+            else:
+                chunks.append(block.text)
+        return "\n\n".join(chunks), "python-docx"
+    if path.suffix.lower() == ".xlsx":
+        from openpyxl import load_workbook
+        workbook = load_workbook(path, read_only=True, data_only=False)
+        chunks = []
+        has_values = False
+        try:
+            for sheet in workbook:
+                chunks.append(f"## Sheet: {sheet.title}")
+                for row in sheet.iter_rows():
+                    values = [(f"[formula: {cell.value}]" if cell.data_type == "f"
+                               else str(cell.value) if cell.value is not None else "")
+                              for cell in row]
+                    if any(values):
+                        has_values = True
+                        chunks.append("\t".join(values).rstrip("\t"))
+        finally:
+            workbook.close()
+        return "\n".join(chunks) if has_values else "", "openpyxl"
+    if path.suffix.lower() == ".pptx":
+        from pptx import Presentation
+
+        def texts(shapes):
+            for shape in shapes:
+                if shape.has_text_frame:
+                    yield shape.text
+                if shape.has_table:
+                    yield "\n".join("\t".join(cell.text for cell in row.cells)
+                                      for row in shape.table.rows)
+                if hasattr(shape, "shapes"):
+                    yield from texts(shape.shapes)
+
+        chunks = []
+        has_text = False
+        for number, slide in enumerate(Presentation(path).slides, 1):
+            chunks.append(f"## Slide {number}")
+            slide_text = [text for text in texts(slide.shapes) if text.strip()]
+            has_text = has_text or bool(slide_text)
+            chunks.extend(slide_text)
+            if slide.has_notes_slide:
+                notes = slide.notes_slide.notes_text_frame
+                if notes is not None and notes.text.strip():
+                    has_text = True
+                    chunks.append(f"Speaker notes:\n{notes.text}")
+        return "\n\n".join(chunks) if has_text else "", "python-pptx"
+    raise ValueError(f"unsupported Office format: {path.suffix}")
+
+
 def extract_binary(path: Path):
-    """Best-effort text from docx/pptx/pdf/xlsx. Returns (text, method)."""
+    """Text from docx/pptx/pdf/xlsx, including native Python fallbacks."""
+    path = Path(path)
     ext = path.suffix.lower()
+    errors = []
+    preferred = {
+        ".docx": ("pandoc", ["pandoc", "--standalone", "-t", "markdown", str(path)]),
+        ".pdf": ("pdftotext", ["pdftotext", "-layout", str(path), "-"]),
+    }.get(ext)
+    if preferred and have(preferred[0]):
+        try:
+            text = subprocess.run(preferred[1], capture_output=True, text=True,
+                                  check=True, timeout=60).stdout
+            if text.strip():
+                return text, preferred[0]
+        except Exception as error:
+            errors.append(f"{preferred[0]}: {error}")
     try:
-        EXTRACT_TIMEOUT = 60
-        if ext == ".docx" and have("pandoc"):
-            return subprocess.run(["pandoc", "-t", "markdown", str(path)],
-                                  capture_output=True, text=True, check=True,
-                                  timeout=EXTRACT_TIMEOUT).stdout, "pandoc"
-        if ext == ".pdf" and have("pdftotext"):
-            return subprocess.run(["pdftotext", "-layout", str(path), "-"],
-                                  capture_output=True, text=True, check=True,
-                                  timeout=EXTRACT_TIMEOUT).stdout, "pdftotext"
-        if have("markitdown"):
-            return subprocess.run(["markitdown", str(path)],
-                                  capture_output=True, text=True, check=True,
-                                  timeout=EXTRACT_TIMEOUT).stdout, "markitdown"
+        if ext in {".docx", ".pptx", ".xlsx"}:
+            return _extract_office(path)
         if ext == ".pdf":
             from pypdf import PdfReader
-            return "\n\n".join((pg.extract_text() or "") for pg in PdfReader(str(path)).pages), "pypdf"
-    except Exception as e:
-        return "", f"FAILED: {e}"
-    return "", "NO_EXTRACTOR"
+            text = "\n\n".join((page.extract_text() or "") for page in PdfReader(str(path)).pages)
+            return text, "pypdf" if text.strip() else "NO_TEXT_LAYER: PDF needs OCR"
+    except Exception as error:
+        errors.append(str(error))
+    if have("markitdown"):
+        try:
+            return subprocess.run(["markitdown", str(path)], capture_output=True,
+                                  text=True, check=True, timeout=60).stdout, "markitdown"
+        except Exception as error:
+            errors.append(f"markitdown: {error}")
+    return "", f"FAILED: {'; '.join(errors)}" if errors else "NO_EXTRACTOR"
 
 
 def extract_excalidraw(path: Path):
@@ -402,6 +474,10 @@ def agg(shas):
 def build_units(repo, cap, bulk, wikiignore=None, max_pkg=120):
     if wikiignore is None:
         wikiignore = load_wikiignore(repo)
+    probe = subprocess.run(["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"],
+                           capture_output=True, text=True)
+    if probe.returncode != 0:
+        return []
     first, last, ncommit, authors = history(repo)
     rows = [(sha, rel, k) for sha, rel in tracked(repo)
             if (k := classify(rel, wikiignore)) is not None]
@@ -692,7 +768,18 @@ def build_pending(units, prev, prev_path, absorbed):
     # unconditionally, whether or not its old id was ever absorbed. Excluding
     # it only from `_new - _paired_new` and not from `unabsorbed` is how a
     # renamed-and-already-absorbed unit used to land in BOTH buckets at once.
-    unabsorbed = (cur.keys() - absorbed) - _paired_new
+    if isinstance(absorbed, dict):
+        # A discovery manifest describes what was seen, not what was compiled.
+        # Keep an unsuccessful update queued even after another discovery pass.
+        unabsorbed = (cur.keys() - absorbed.keys()) - _paired_new
+        unfinished = {uid for uid in cur.keys() & absorbed.keys()
+                      if absorbed[uid] != cur[uid][0]}
+        newly_queued = unabsorbed
+    else:
+        # Compatibility for callers still supplying an old ID-only set.
+        unabsorbed = (cur.keys() - absorbed) - _paired_new
+        unfinished = set()
+        newly_queued = (_new - _paired_new) | unabsorbed
 
     def chrono(ids):
         """Absorb oldest-first, per SKILL.md's own contract. A unit with no
@@ -703,11 +790,11 @@ def build_pending(units, prev, prev_path, absorbed):
         return sorted(ids, key=key)
 
     return {
-        "new": chrono((_new - _paired_new) | unabsorbed),
+        "new": chrono(newly_queued),
         # status counts as a change: a doc demoted to superseded needs re-absorbing
         # even though its bytes never moved
-        "changed": chrono(k for k in cur.keys() & prev.keys()
-                          if cur[k] != prev[k] and k not in unabsorbed),
+        "changed": chrono(unfinished | {k for k in cur.keys() & prev.keys()
+                          if cur[k] != prev[k] and k not in unabsorbed}),
         "removed": sorted(_removed - _paired_old),
         "renamed": renamed,
         "first_run": not prev,
@@ -720,6 +807,8 @@ def main():
     ap.add_argument("--out", type=Path, default=Path("raw/entries"))
     ap.add_argument("--wiki", type=Path, default=None,
                     help="durable wiki dir; holds the manifest twin and absorb log")
+    ap.add_argument("--source-only", action="store_true",
+                    help="ingest connector inbox entries without scanning Git files")
     ap.add_argument("--code-depth", type=int, default=3)
     ap.add_argument("--bulk-threshold", type=int, default=5)
     ap.add_argument("--max-package-files", type=int, default=120)
@@ -728,8 +817,11 @@ def main():
 
     repo = a.repo.resolve()
     wikiignore = load_wikiignore(repo)
-    units = build_units(repo, a.code_depth, a.bulk_threshold, wikiignore=wikiignore,
-                        max_pkg=a.max_package_files)
+    if not a.out.is_absolute():
+        a.out = repo / a.out
+    units = ([] if a.source_only else
+             build_units(repo, a.code_depth, a.bulk_threshold, wikiignore=wikiignore,
+                         max_pkg=a.max_package_files))
     units += load_inbox(a.out.parent / INBOX_DIRNAME, load_inbox_exclude(repo))
     manifest = a.out.parent / "_manifest.json"
     # Committed twin of the manifest. raw/ is gitignored, so on a fresh clone
@@ -782,13 +874,12 @@ def main():
             prev_path = {u["id"]: u.get("path", "") for u in _m}
         except Exception:
             prev, prev_path = {}, {}
-    absorbed = set()
+    try:
+        from .completion import read_completed
+    except ImportError:
+        from completion import read_completed
     absorb_log = wiki_dir / "_absorb_log.json"
-    if absorb_log.is_file():
-        try:
-            absorbed = set(json.loads(absorb_log.read_text()))
-        except Exception:
-            absorbed = set()
+    absorbed = read_completed(absorb_log)
 
     pending = build_pending(units, prev, prev_path, absorbed)
     by_id = {u["id"]: u for u in units}

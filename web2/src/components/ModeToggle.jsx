@@ -2,8 +2,8 @@ import { Search, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
 const MODES = [
-  { id: 'search', label: 'Search', icon: Search, hint: 'Free — searches what you have connected' },
-  { id: 'ask', label: 'Ask', icon: Sparkles, hint: 'Costs tokens — the assistant reasons over your wiki' },
+  { id: 'ask', label: 'Ask', icon: Sparkles, hint: 'Your configured model reasons over the wiki' },
+  { id: 'search', label: 'Search', icon: Search, hint: 'Find text in connected sources without a model' },
 ]
 
 // Used exactly once in this product. It is the headline difference between

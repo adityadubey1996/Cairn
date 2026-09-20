@@ -5,7 +5,7 @@ import { ConnectFlow } from './ConnectFlow'
 
 // What the Google consent screen actually asks for. Everything else in the
 // catalogue's Google group is aspirational until a feeder exists.
-const GOOGLE_OAUTH_KINDS = ['gdrive', 'gchat']
+const GOOGLE_OAUTH_KINDS = ['gdrive', 'gchat', 'gmail']
 
 // The one connector picker. Onboarding step 2 and Connect > Health both render
 // this, so "add a source" is the same act in both places — grouped by provider,
@@ -13,7 +13,7 @@ const GOOGLE_OAUTH_KINDS = ['gdrive', 'gchat']
 // what makes that legible.
 export function ConnectorPicker({
   projects = [], projectId, onProjectId,
-  connectedKinds = [], onConnected, onRemove, className,
+  connectedKinds = [], onConnected, onRemove, onNavigate, className,
   // Onboarding marks a card as connected the moment it authorizes. Health must
   // not: there every card is an offer to add ANOTHER connection (two GitHub
   // repos are two connections), so a card already in the project stays
@@ -26,7 +26,7 @@ export function ConnectorPicker({
   // The provider hand-off ConnectFlow needs. Without it ConnectFlow throws
   // "not wired to the backend yet" in live mode — the flow was built before
   // the endpoints behind it existed.
-  const authorize = async ({ kind, projectId: pid, token, site, email }) => {
+  const authorize = async ({ kind, projectId: pid, token, site, email, urls, maxItems }) => {
     const item = (api.CONNECTOR_CATALOGUE ?? []).flatMap((g) => g.items)
       .find((i) => i.kind === kind)
 
@@ -34,7 +34,10 @@ export function ConnectorPicker({
     // own clone/graph/ingest lifecycle, which is why connections.create
     // rejects the kind outright.
     if (kind === 'github') {
-      throw new Error('Add GitHub repos from the Repos tab — they are not connections.')
+      const probe = await api.checkRepo(site)
+      const repo = await api.addRepo(site, probe.default_branch, token, pid)
+      const run = await api.syncConnection(repo.id)
+      return { connectionId: repo.id, runId: run.runId ?? run.run_id }
     }
 
     if (item?.auth === 'oauth') {
@@ -49,12 +52,15 @@ export function ConnectorPicker({
       // and redirects back, so there is nothing here to resolve.
       window.location.assign(
         `/api/google/authorize?project_id=${encodeURIComponent(pid)}`
-        + `&kind=${encodeURIComponent(kind)}`)
+        + `&kind=${encodeURIComponent(kind)}`
+        + (maxItems ? `&max_items=${encodeURIComponent(maxItems)}` : ''))
       return
     }
 
-    const config = kind === 'jira' ? { site, email, token } : token ? { token } : {}
-    await api.createConnection(pid, kind, item?.name ?? kind, config)
+    const config = kind === 'links' ? { urls } : kind === 'jira' ? { site, email, token } : token ? { token } : {}
+    const connection = await api.createConnection(pid, kind, item?.name ?? kind, config)
+    const run = await api.syncConnection(connection.id)
+    return { connectionId: connection.id, runId: run.runId ?? run.run_id }
   }
 
   // A catalogue entry with no feeder behind it says so on the card instead of
@@ -63,6 +69,7 @@ export function ConnectorPicker({
   const cardFor = (item) => (
     <ConnectorCard
       key={item.kind}
+      actionLabel={item.kind === 'github' ? 'Add repository' : undefined}
       className={item.available === false ? 'opacity-60' : undefined}
       connection={{
         kind: item.kind, name: item.name, auth: item.auth,
@@ -71,8 +78,8 @@ export function ConnectorPicker({
         status: markConnected && connectedKinds.includes(item.kind) ? 'running' : 'not_configured',
         lastSyncAt: null, itemCount: 0,
       }}
-      onSync={item.available === false ? undefined : () => setOpenKind(item.kind)}
-      onRemove={() => onRemove?.(item.kind)}
+      onSync={item.available === false ? undefined : () => item.kind === 'github' && onNavigate ? onNavigate('repos') : setOpenKind(item.kind)}
+      onRemove={onRemove && markConnected && connectedKinds.includes(item.kind) ? () => onRemove(item.kind) : undefined}
     />
   )
 

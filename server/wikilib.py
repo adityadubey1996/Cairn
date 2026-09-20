@@ -12,13 +12,13 @@ import re
 import urllib.request
 
 WIKILINK = re.compile(r"\[\[([^\]]+)\]\]")
-CITE = re.compile(r"([\w./\-]+\.\w+)@([0-9a-f]{7,40})")
+CITE = re.compile(r"([\w./\-]+\.\w+)@([0-9a-f]{7,64})(?![0-9a-f])")
 GRADE = re.compile(r"\[(verified|code|doc|conflict|gap)[:\]]")
 # An article body's own citations are grade-bracketed — [doc: path@sha] — unlike
 # a chat answer's bare [path@sha] (framing.py's prompt asks the model for the
 # simpler form). Both match CITE; this one also captures which grade.
 ARTICLE_CITE = re.compile(
-    r"\[(verified|code|doc|conflict|gap):\s*([\w./\-]+\.\w+)@([0-9a-f]{7,40})\]")
+    r"\[(verified|code|doc|conflict|gap):\s*([\w./\-]+\.\w+)@([0-9a-f]{7,64})\]")
 
 
 def parse_grades(raw: str) -> dict:

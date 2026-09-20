@@ -18,12 +18,12 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, pipeline_runs, repos
+from . import config, pipeline_runs, repos, automation, jobs
 from .db import connect
 from feeders.upload import sync as upload_sync
 
-NON_GITHUB_KINDS = ("gdrive", "gchat", "links", "whatsapp", "linkedin", "upload")
-AUTH_OF_KIND = {"gdrive": "oauth", "gchat": "oauth", "links": "none",
+NON_GITHUB_KINDS = ("gdrive", "gchat", "gmail", "links", "whatsapp", "linkedin", "upload")
+AUTH_OF_KIND = {"gdrive": "oauth", "gchat": "oauth", "gmail": "oauth", "links": "none",
                 "whatsapp": "browser", "linkedin": "browser", "upload": "none"}
 
 
@@ -61,12 +61,13 @@ def list_connections(project_id: str) -> list[dict]:
             "SELECT id, project_id, kind, name, config, created_at, synced_at "
             "FROM brain_connector_connections WHERE project_id = %s ORDER BY created_at",
             (project_id,)).fetchall()
-        # Shared per-kind run history (see module docstring) — one lookup
-        # covers every row of that kind.
-        last_by_kind = {r["connector_id"]: r for r in c.execute(
-            "SELECT DISTINCT ON (connector_id) connector_id, status, items_written, "
+        # Two accounts of the same provider have independent jobs. Legacy
+        # unattributed runs cannot safely be assigned to either connection.
+        last_by_connection = {r["connection_id"]: r for r in c.execute(
+            "SELECT DISTINCT ON (connection_id) id, connection_id, connector_id, status, items_written, "
             "started_at, finished_at, heartbeat_at, error FROM brain_connector_runs "
-            "ORDER BY connector_id, started_at DESC").fetchall()}
+            "WHERE project_id = %s AND connection_id IS NOT NULL "
+            "ORDER BY connection_id, started_at DESC, id DESC", (project_id,)).fetchall()}
         repo_rows = c.execute(
             "SELECT id, owner, name, branch, state, last_error, articles, "
             "project_id, updated_at FROM brain_repos "
@@ -74,15 +75,16 @@ def list_connections(project_id: str) -> list[dict]:
         # Cumulative, from the source index — NOT the last run's items_written,
         # which is a delta. A Chat connection holding 573 space-days read as
         # "5 items" because the most recent sync happened to write five.
-        items_by_kind = {r["kind"]: r["n"] for r in c.execute(
-            "SELECT kind, count(*) AS n FROM brain_sources "
-            "WHERE project_id = %s AND status = 'ok' GROUP BY kind",
+        items_by_connection = {r["connection_id"]: r["n"] for r in c.execute(
+            "SELECT connection_id, count(*) AS n FROM brain_sources "
+            "WHERE project_id = %s AND status = 'ok' AND connection_id IS NOT NULL "
+            "GROUP BY connection_id",
             (project_id,)).fetchall()}
 
     now = datetime.now(timezone.utc)
     out = []
     for row in rows:
-        last = last_by_kind.get(row["kind"])
+        last = last_by_connection.get(row["id"])
         # A run still marked `running` used to render as "ok", so a card claimed
         # synced while a sync was in flight — and a run that died mid-flight
         # claimed it forever (this table had links runs stuck since August).
@@ -90,24 +92,35 @@ def list_connections(project_id: str) -> list[dict]:
         # falling back to started_at when nothing writes a heartbeat, which is
         # the case for every run server/runs.py starts.
         derived = pipeline_runs.derive_status(last, now) if last else None
-        status = ("error" if derived == "error"
-                  else derived if derived in ("running", "interrupted")
-                  else "ok" if last else "never_run")
+        status = derived or "never_run"
         out.append({
             "id": row["id"], "projectId": row["project_id"], "kind": row["kind"],
             "name": row["name"],
             "detail": (row["config"] or {}).get("detail") or row["kind"],
             "status": status,
             "lastSyncAt": last["finished_at"].isoformat() if last and last["finished_at"] else None,
-            # How far THIS connection has been scraped, which is not the same as
-            # when a run of its kind last finished: runs are shared per kind,
-            # the watermark is per connection.
+            # The checkpoint belongs to this connection, independently of
+            # the completion time of its latest job.
             "syncedAt": row["synced_at"].isoformat() if row["synced_at"] else None,
-            "itemCount": items_by_kind.get(row["kind"], 0),
+            "itemCount": items_by_connection.get(row["id"], 0),
             "auth": AUTH_OF_KIND.get(row["kind"], "none"),
-            "error": last["error"] if last and last["status"] == "error" else None,
+            "error": last["error"] if last else None,
+            "runId": str(last["id"]) if last and status in ("queued", "running", "cancelling") else None,
         })
-    out.extend(_repo_as_connection(r) for r in repo_rows)
+    for row in repo_rows:
+        connection = _repo_as_connection(row)
+        last = last_by_connection.get(row["id"])
+        if last:
+            status = pipeline_runs.derive_status(last, now)
+            connection.update(status=status, error=last["error"],
+                              lastSyncAt=last["finished_at"].isoformat() if last["finished_at"] else None,
+                              runId=str(last["id"]) if status in ("queued", "running", "cancelling") else None)
+        elif row["state"] in ("cloned", "graphed", "ingested"):
+            # These are completed preparation steps, not evidence of a
+            # currently running process.
+            connection["status"] = "ok"
+        connection["itemCount"] = items_by_connection.get(row["id"], 0)
+        out.append(connection)
     return out
 
 
@@ -116,6 +129,19 @@ def create(project_id: str, kind: str, name: str, config: dict | None = None) ->
         raise Invalid(f"unknown connector kind: {kind!r}")
     if not name or not name.strip():
         raise Invalid("name is required")
+    if not project_id:
+        raise Invalid('projectId is required')
+    if config is not None and not isinstance(config, dict):
+        raise Invalid('config must be an object')
+    config = dict(config or {})
+    if 'max_items' in config and (type(config['max_items']) is not int or not 0 <= config['max_items'] <= 10000):
+        raise Invalid('max_items must be an integer between 0 and 10000')
+    for key in ('urls', 'source_ids'):
+        if key in config and (not isinstance(config[key], list) or len(config[key]) > 1000
+                              or not all(isinstance(s, str) and s.strip() for s in config[key])):
+            raise Invalid(f'{key} must be a list of up to 1000 nonempty strings')
+    if 'query' in config and not isinstance(config['query'], str):
+        raise Invalid('query must be text')
     cid = f"{kind}-{uuid.uuid4().hex[:8]}"
     with connect() as c:
         c.execute(
@@ -161,48 +187,14 @@ def stage_upload(connection_id: str, files: list[tuple[str, bytes]]) -> int:
 
 
 def sync(connection_id: str, full: bool = False) -> dict:
-    if _is_github(connection_id):
-        # run_sync returns {"clone":…, "graph":…, "ingest":…} — the step results,
-        # not a repo row. Handing that straight to _repo_as_connection made it
-        # read r["id"] off a step dict, and the resulting KeyError surfaced as a
-        # 404 *after* the clone, graph and ingest had all succeeded. Re-read the
-        # row those steps just mutated.
-        repos.run_sync(connection_id)
-        row = repos.get(connection_id)
-        if not row:
-            raise KeyError(f"no such repo: {connection_id}")
-        return _repo_as_connection(row)
-    row = _require(connection_id)
-    # Spawn the phased runner rather than calling the feeder inline. run_now()
-    # blocked the request thread through the whole sync plus the S3 push and
-    # handed back no handle, so nothing could be watched; the runner already
-    # writes phases, per-item progress and a log to Postgres. --skip-absorb
-    # because absorb is the only phase that spends money and has its own
-    # controls.
-    if pipeline_runs.live(row["kind"]):
-        raise Invalid(f"{row['kind']} already has a run in flight")
-    run_id = pipeline_runs.start(row["kind"])
-    args = [sys.executable, str(config.ROOT / "scripts" / "pipeline_run.py"),
-            "--connector", row["kind"], "--run-id", run_id,
-            "--project-id", row["project_id"],
-            "--connection-id", connection_id, "--skip-absorb"]
-    # Only fetch what changed since this connection was last scraped clean.
-    # Without it every sync re-lists and re-extracts the whole account to
-    # discover that no sha moved.
-    if full:
-        args.append("--full")
-    elif (since := watermark(connection_id)):
-        args += ["--since", since]
-    # The links phase walks the PROJECT's entire unfetched URL backlog, not the
-    # URLs this scrape just found (pipeline_run.phase_links). Dragging that
-    # behind an incremental sync is the opposite of incremental, so it is off
-    # here and offered as its own action on Health.
-    args.append("--skip-links")
-    # start_new_session detaches it from this server's process group, so a
-    # redeploy that stops the container's main process does not signal the run.
-    subprocess.Popen(args, cwd=str(config.ROOT), start_new_session=True,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return {"id": connection_id, "status": "running", "runId": run_id}
+    row = repos.get(connection_id) if _is_github(connection_id) else _require(connection_id)
+    if not row:
+        raise KeyError(f"no such connection: {connection_id}")
+    policy = automation.get(connection_id)
+    result = jobs.submit('github' if _is_github(connection_id) else row['kind'],
+                         row['project_id'], connection_id=connection_id,
+                         absorb=policy['auto_absorb'], full=full)
+    return {'id': connection_id, 'status': result['status'], 'runId': result['run_id']}
 
 
 def remove(connection_id: str) -> None:

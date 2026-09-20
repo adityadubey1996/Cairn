@@ -73,7 +73,7 @@ function Label({ children }) {
   return <h2 className="text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">{children}</h2>
 }
 
-export function Reader({ path, nodes, state, absorbedAt, onNavigate, onRetry, onConnect, onDeleted }) {
+export function Reader({ path, projectId, nodes, state, absorbedAt, onNavigate, onRetry, onConnect, onDeleted }) {
   const [confirmingDelete, setConfirmingDelete] = useState(false)
   const [deleteError, setDeleteError] = useState(null)
   const [article, setArticle] = useState(null)
@@ -85,7 +85,7 @@ export function Reader({ path, nodes, state, absorbedAt, onNavigate, onRetry, on
     let cancelled = false
     setArticle(null)
     setArticleError(null)
-    api.wikiArticle({ path })
+    api.wikiArticle({ path, projectId })
       .then((doc) => {
         if (cancelled) return
         if (doc) setArticle(doc)
@@ -93,7 +93,7 @@ export function Reader({ path, nodes, state, absorbedAt, onNavigate, onRetry, on
       })
       .catch((e) => !cancelled && setArticleError(e))
     return () => { cancelled = true }
-  }, [path, reload])
+  }, [path, projectId, reload])
 
   const pathByTitle = useMemo(() => new Map(nodes.map((n) => [n.title, n.path])), [nodes])
   const typeByPath = useMemo(() => new Map(nodes.map((n) => [n.path, n.type])), [nodes])
@@ -194,7 +194,7 @@ export function Reader({ path, nodes, state, absorbedAt, onNavigate, onRetry, on
         onConfirm={async () => {
           setConfirmingDelete(false)
           try {
-            await api.deleteArticle({ path })
+            await api.deleteArticle({ path, projectId })
             onDeleted?.(path)
           } catch (e) {
             setDeleteError(e.message)

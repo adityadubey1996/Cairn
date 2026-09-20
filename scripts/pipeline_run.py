@@ -20,10 +20,13 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,18 +35,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from server import config, pipeline_runs as runs, storage  # noqa: E402
 
-CONNECTORS = ("gdrive", "gchat", "links", "whatsapp", "linkedin", "upload")
+CONNECTORS = ("gdrive", "gchat", "gmail", "links", "whatsapp", "linkedin", "upload", "github")
 
 # What each feeder calls its watermark. The names differ because the APIs do:
 # Drive filters on the file's modifiedTime, Chat on the message's createTime.
 # A connector absent here simply ignores --since.
-SINCE_ARG = {"gdrive": "modified_after", "gchat": "created_after"}
+SINCE_ARG = {"gdrive": "modified_after", "gchat": "created_after", "gmail": "modified_after"}
 
 # Keys are connector ids, which are also the sources/<id>/ subdirectory names
 # units_for() selects on — so a new entry needs no other change here.
 FEEDER = {
     "gdrive": "feeders.gdrive.sync",
     "gchat": "feeders.chat.sync",
+    "gmail": "feeders.gmail.sync",
     "links": "feeders.links.sync",
     "whatsapp": "feeders.whatsapp.sync",
     "linkedin": "feeders.linkedin.sync",
@@ -53,6 +57,38 @@ FEEDER = {
 # Above the ~11M a full Drive plus Chat sweep is expected to need. A runaway
 # guard, not a per-run budget the operator is meant to tune.
 DEFAULT_MAX_TOKENS = 15_000_000
+
+_cancel = threading.Event()
+_child: subprocess.Popen | None = None
+_file_lock = None
+
+
+class Cancelled(Exception):
+    pass
+
+
+def _request_stop(*_args) -> None:
+    _cancel.set()
+    if _child is not None and _child.poll() is None:
+        _child.terminate()
+
+
+def _check_cancel() -> None:
+    if _cancel.is_set():
+        raise Cancelled('Stopped by user')
+
+
+def _heartbeat(run_id: str, done: threading.Event) -> None:
+    while not done.wait(5):
+        try:
+            runs.progress(run_id)
+            row = runs.get(run_id)
+            if row and row.get('cancel_requested') and not _cancel.is_set():
+                _request_stop()
+        except Exception:
+            # Transient DB failure must not kill the model process. The lease
+            # remains visible and the next heartbeat retries.
+            pass
 
 # `- `<unit id>` — `<source path>` (<kind>)`, the line ingest.py writes into
 # each bucket of raw/_pending.md. The separator is an em dash, not a hyphen.
@@ -129,6 +165,7 @@ def phase_scrape(run_id: str, connector: str, project_id: str,
     t0 = time.monotonic()
 
     def on_progress(done: int, total: int, label: str) -> None:
+        _check_cancel()
         runs.progress(run_id, seen=total, written=done)
         runs.log(run_id, [f"  [{done}/{total}] {label}"])
 
@@ -136,19 +173,25 @@ def phase_scrape(run_id: str, connector: str, project_id: str,
     # Cleared here rather than inside each feeder: one call covers every
     # connector and anchors the meaning of a failed row to the latest scrape.
     from server import sources as sources_index
-    dropped = sources_index.clear_failures(project_id, connector)
-    if dropped:
-        runs.log(run_id, [f"cleared {dropped} failure(s) from the previous scrape"])
     # project_id is not optional here: omitting it makes the feeder fall back to
     # the default project, so every pipeline-path scrape landed in that project
     # regardless of which one the connection belongs to.
     kwargs = {"project_id": project_id, "on_progress": on_progress,
               "connection_id": connection_id or None}
+    if connection_id:
+        from server import connections
+        options = connections._require(connection_id).get('config') or {}
+        fields = {'gdrive': ('source_ids', 'max_items'), 'gmail': ('query', 'max_items'), 'gchat': ('max_items',),
+                  'links': ('urls', 'max_items')}.get(connector, ())
+        kwargs.update({key: options[key] for key in fields if key in options})
     if since and connector in SINCE_ARG:
         kwargs[SINCE_ARG[connector]] = since
         runs.log(run_id, [f"incremental: only what changed after {since}"])
-    seen, written = mod.run(**kwargs)
+    result = mod.run(**kwargs)
+    seen, written = result
     record = {"seen": seen, "written": written,
+              "failed": getattr(result, 'failed', 0),
+              "complete": getattr(result, 'complete', True),
               "seconds": round(time.monotonic() - t0, 1)}
     runs.log(run_id, [f"scrape: {written} written of {seen} seen"])
     runs.end_phase(run_id, "scrape", record)
@@ -175,11 +218,15 @@ def phase_links(run_id: str, project_id: str) -> dict:
     from feeders.links import sync as links
 
     def on_progress(done: int, total: int, url: str) -> None:
+        _check_cancel()
         runs.progress(run_id, seen=total, written=done)
         runs.log(run_id, [f"  [{done}/{total}] {url[:120]}"])
 
-    seen, written = links.run(project_id=project_id, on_progress=on_progress)
+    result = links.run(project_id=project_id, on_progress=on_progress)
+    seen, written = result
     record = {"seen": seen, "written": written,
+              "failed": getattr(result, 'failed', 0),
+              "complete": getattr(result, 'complete', True),
               "seconds": round(time.monotonic() - t0, 1)}
     runs.log(run_id, [f"links: {written} fetched of {seen} attempted"])
     runs.end_phase(run_id, "links", record)
@@ -192,10 +239,13 @@ def _stream(run_id: str, args: list[str], on_line=None) -> int:
     Line-buffered and read as it arrives, which is the whole point: the absorb
     phase runs for hours and its output is the only window into it.
     """
+    global _child
+    _check_cancel()
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     p = subprocess.Popen(args, cwd=str(config.ROOT), env=env, text=True,
                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         bufsize=1)
+                         bufsize=1, pass_fds=(_file_lock.fileno(),) if _file_lock else ())
+    _child = p
     batch = []
     for line in p.stdout:
         line = line.rstrip("\n")
@@ -210,14 +260,18 @@ def _stream(run_id: str, args: list[str], on_line=None) -> int:
             batch = []
     if batch:
         runs.log(run_id, batch)
-    return p.wait()
+    code = p.wait()
+    _child = None
+    return code
 
 
-def phase_ingest(run_id: str, connector: str) -> dict:
+def phase_ingest(run_id: str, connector: str, project_id: str = '') -> dict:
     t0 = time.monotonic()
     runs.begin_phase(run_id, "ingest")
+    from server import projects
+    wiki = projects.wiki_root(project_id) if project_id else (config.WIKI_ROOTS[0] if config.WIKI_ROOTS else config.ROOT/'wiki')
     code = _stream(run_id, [sys.executable, "pipeline/ingest.py",
-                            "--repo", ".", "--out", "raw/entries"])
+                            "--repo", ".", "--out", "raw/entries", '--source-only', '--wiki', str(wiki)])
     if code != 0:
         raise RuntimeError(f"ingest exited {code}")
     queued = len(units_for(_pending_text(), connector))
@@ -238,11 +292,14 @@ def _absorb_has_token_ceiling() -> bool:
 
 
 def phase_absorb(run_id: str, ids: list[str], max_tokens: int,
-                 project_id: str = "") -> dict:
+                 project_id: str = "", automatic: bool = False) -> dict:
     """Absorb exactly `ids`. The caller decides what they are: a connector run
     passes units_for(_pending_text(), connector), a wiki write-up passes the
     ids a human ticked in the Sources list."""
     t0 = time.monotonic()
+    if project_id:
+        from server import sources
+        ids = sources.eligible(project_id, ids, automatic=automatic)
     runs.begin_phase(run_id, "absorb", total=len(ids))
     if not ids:
         record = {"seen": 0, "written": 0, "seconds": 0.0,
@@ -264,7 +321,7 @@ def phase_absorb(run_id: str, ids: list[str], max_tokens: int,
     if project_id:
         ingest_units.seed(project_id, ids)
 
-    tally = {"written": 0, "tok_in": 0, "tok_out": 0}
+    tally = {"written": 0, "failed": 0, "tok_in": 0, "tok_out": 0}
     # The unit absorb_runner last announced, and the ones that went on to
     # publish. A stopped or failed run must leave everything it did NOT write
     # up still queued, so the queue is cleared per published unit rather than
@@ -273,21 +330,38 @@ def phase_absorb(run_id: str, ids: list[str], max_tokens: int,
     published: list[str] = []
 
     def on_line(line: str) -> None:
+        if line.startswith('{'):
+            try:
+                event = json.loads(line)
+            except ValueError:
+                return
+            if event.get('event') != 'unit_result':
+                return
+            uid = event['unit_id']
+            if event.get('status') == 'deferred':
+                if project_id:
+                    ingest_units.mark(uid, project_id, 'pending', run_id=run_id)
+                return
+            tally['tok_in'] += event.get('tokens_in', 0)
+            tally['tok_out'] += event.get('tokens_out', 0)
+            good = event.get('status') == 'done'
+            tally['written' if good else 'failed'] += 1
+            if project_id:
+                ingest_units.mark(uid, project_id, 'done' if good else 'failed', run_id=run_id,
+                                  article=event.get('article'), error=event.get('error'))
+                if good:
+                    from server import sources
+                    if not sources.absorbed(project_id, uid, event.get('source_revision')):
+                        ingest_units.mark(uid, project_id, 'pending', run_id=run_id)
+            if good:
+                published.append(uid)
+            runs.progress(run_id, written=tally['written'])
+            return
         if (p := parse_progress(line)):
             runs.progress(run_id, seen=p[1])
             at["uid"] = parse_unit(line)
             if at["uid"] and project_id:
                 ingest_units.mark(at["uid"], project_id, "running", run_id=run_id)
-        elif (r := parse_result(line)):
-            tally["written"] += 1
-            tally["tok_in"] += r["tok_in"]
-            tally["tok_out"] += r["tok_out"]
-            runs.progress(run_id, written=tally["written"])
-            if at["uid"]:
-                published.append(at["uid"])
-                if project_id:
-                    ingest_units.mark(at["uid"], project_id, "done",
-                                      run_id=run_id, article=r["article"])
 
     # --kind "" disables absorb_runner's kind filter, which still applies even
     # when --only is given. Drive units span meeting_transcript, doc and
@@ -303,7 +377,13 @@ def phase_absorb(run_id: str, ids: list[str], max_tokens: int,
     # empty directory — 11 articles and 583k tokens landed somewhere the app
     # could not show. WIKI_ROOTS[0] is what the UI serves, and storage.trees()
     # pushes the same directory, so all three agree by construction.
-    if config.WIKI_ROOTS:
+    if project_id:
+        from server import projects
+        args += ['--wiki', str(projects.wiki_root(project_id))]
+        args += ['--project-id', project_id]
+        if automatic:
+            args += ['--auto-only']
+    elif config.WIKI_ROOTS:
         args += ["--wiki", str(config.WIKI_ROOTS[0])]
     for uid in ids:
         args += ["--only", uid]
@@ -311,22 +391,78 @@ def phase_absorb(run_id: str, ids: list[str], max_tokens: int,
     # Before the raise, deliberately: a run that died halfway still wrote up
     # everything it published, and re-queueing those would pay for them twice.
     if published and project_id:
-        from server import sources as sources_index
-        sources_index.set_queued(project_id, published, False)
-        runs.log(run_id, [f"cleared {len(published)} source(s) from the wiki queue"])
+        runs.log(run_id, [f"published {len(published)} source revision(s); newer revisions remain queued"])
     # Whatever is still "running" never reported a result — the process ended
     # first. Left alone it would claim to be running forever.
     if project_id:
-        stale = ingest_units.reset_stale(project_id)
+        stale = ingest_units.reset_stale(project_id, run_id=run_id)
         if stale:
             runs.log(run_id, [f"{stale} unit(s) did not finish; back in the queue"])
-    if code != 0:
+    _check_cancel()
+    if code not in (0, 1, 4) or (code and not tally['failed']):
         raise RuntimeError(f"absorb exited {code}")
     record = {"seen": len(ids), "written": tally["written"],
+              'failed': tally['failed'],
               "seconds": round(time.monotonic() - t0, 1),
               "tokens_in": tally["tok_in"], "tokens_out": tally["tok_out"]}
     runs.end_phase(run_id, "absorb", record)
     return record
+
+
+def phase_repo(run_id: str, connection_id: str, absorb: bool) -> dict:
+    from server import repos, corpus
+    job = runs.get(run_id).get('job') or {}
+    step, options = job.get('repo_step', 'sync'), job.get('options', {})
+    phases = ('clone', 'graph', 'ingest') if step == 'sync' else (() if step == 'absorb' else (step,))
+    for phase in phases:
+        _check_cancel()
+        runs.begin_phase(run_id, phase)
+        kwargs = {'commit': options.get('commit')} if phase == 'ingest' else {}
+        record = repos.STEPS[phase](repos._require(connection_id), **kwargs)
+        _check_cancel()
+        runs.end_phase(run_id, phase, record)
+        runs.log(run_id, [f'{phase}: {record}'])
+    row = repos._require(connection_id)
+    tally = {'seen': 0, 'written': 0, 'failed': 0}
+    if absorb:
+        runs.begin_phase(run_id, 'absorb')
+        kind = options.get('kind', '')
+        only = options.get('only') or []
+        if options.get('since'):
+            touched = repos.units_touched_since(Path(row['clone_path']), options['since'], kind or None)
+            only = [uid for uid in only if uid in touched] if only else touched
+            if not only:
+                runs.end_phase(run_id, 'absorb', tally)
+                return tally
+        args = [sys.executable, str(config.PIPELINE_DIR/'absorb_runner.py'),
+                      '--repo', row['clone_path'], '--wiki', row['wiki_root'], '--kind', '',
+                      '--max-tokens', str(DEFAULT_MAX_TOKENS)]
+        args[args.index('--kind') + 1] = kind
+        if row.get('pinned_sha'):
+            args += ['--entries', str(Path(row['clone_path']) / 'raw' / f"at-{row['pinned_sha'][:12]}" / 'entries')]
+        if options.get('limit'):
+            args += ['--limit', str(options['limit'])]
+        for uid in only:
+            args += ['--only', uid]
+        def result(line):
+            try:
+                event = json.loads(line)
+            except (ValueError, TypeError):
+                return
+            if event.get('event') != 'unit_result':
+                return
+            tally['seen'] += 1
+            tally['written' if event['status'] == 'done' else 'failed'] += 1
+            runs.progress(run_id, seen=tally['seen'], written=tally['written'])
+        repos.update(connection_id, state='absorbing')
+        code = _stream(run_id, args, on_line=result)
+        _check_cancel()
+        if code not in (0, 1) or (code and not tally['failed']):
+            raise RuntimeError(f'repository absorption exited {code}')
+        runs.end_phase(run_id, 'absorb', tally)
+        repos.update(connection_id, state='ready', articles=repos.count_articles(row['wiki_root']))
+    corpus.sync()
+    return tally
 
 
 def phase_push(run_id: str) -> dict:
@@ -346,6 +482,7 @@ def phase_push(run_id: str) -> dict:
 
 
 def main() -> int:
+    global _file_lock
     ap = argparse.ArgumentParser()
     ap.add_argument("--connector", default="",
                     help=f"one of {', '.join(CONNECTORS)}; omitted only with --absorb-only")
@@ -379,11 +516,29 @@ def main() -> int:
         ap.error(f"--connector must be one of {', '.join(CONNECTORS)}")
 
     run_id = a.run_id
+    signal.signal(signal.SIGTERM, _request_stop)
+    signal.signal(signal.SIGINT, _request_stop)
     runs.set_pid(run_id, os.getpid())
+    done = threading.Event()
+    heartbeat = threading.Thread(target=_heartbeat, args=(run_id, done), daemon=True)
+    heartbeat.start()
     label = "wiki write-up" if a.absorb_only else a.connector
+    project_id = a.project_id
     runs.log(run_id, [f"pipeline {label} starting (pid {os.getpid()})"])
     try:
-        project_id = a.project_id
+        # The inherited lock remains held by an absorption child even if its
+        # controller is killed. A recovered job therefore cannot race it.
+        import fcntl
+        config.VAR.mkdir(parents=True, exist_ok=True)
+        _file_lock = (config.VAR / 'pipeline.lock').open('a')
+        while True:
+            _check_cancel()
+            try:
+                fcntl.flock(_file_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                runs.begin_phase(run_id, 'waiting')
+                _cancel.wait(1)
         if not project_id:
             from server import projects
             project_id = projects.ensure_default()
@@ -392,10 +547,20 @@ def main() -> int:
             # raw/entries, which holds every unit ever ingested, not just what
             # the last scrape queued. That is what lets a file scraped last
             # month be written up on demand.
-            phase_absorb(run_id, a.only_source, a.max_tokens, project_id)
+            phase_ingest(run_id, 'wiki', project_id)
+            result = phase_absorb(run_id, a.only_source, a.max_tokens, project_id)
             phase_push(run_id)
-            runs.finish(run_id, status="ok")
+            from server import corpus
+            corpus.sync()
+            runs.finish(run_id, status='partial' if result.get('failed') else "ok")
             runs.log(run_id, ["done"])
+            return 0
+        if a.connector == 'github':
+            result = phase_repo(run_id, a.connection_id, not a.skip_absorb)
+            _check_cancel()
+            phase_push(run_id)
+            _check_cancel()
+            runs.finish(run_id, status='partial' if result.get('failed') else 'ok')
             return 0
         # The watermark advances to when this run STARTED, never to "now":
         # anything written while the scrape was in flight has to be caught by
@@ -403,7 +568,8 @@ def main() -> int:
         started_at = datetime.now(timezone.utc).isoformat()
         scraped = phase_scrape(run_id, a.connector, project_id, a.connection_id,
                                since="" if a.full else a.since)
-        if a.connection_id:
+        _check_cancel()
+        if a.connection_id and scraped.get('complete', True):
             # Only after a scrape that did not raise. A failed scrape leaves the
             # watermark where it was so the missed window is retried.
             from server import connections
@@ -415,25 +581,56 @@ def main() -> int:
             phase_push(run_id)
         # Before ingest, so a page fetched from this scrape's transcripts is
         # queued in the same pass rather than waiting for the next sync.
+        linked = {}
         if a.connector in LINK_SCANNING_CONNECTORS and not a.skip_links:
             try:
-                phase_links(run_id, project_id)
+                linked = phase_links(run_id, project_id)
+            except Cancelled:
+                raise
             except Exception as e:
                 # Never fatal: the transcripts are already on disk and pushed.
                 # An unreachable web is not a reason to fail a chat sync.
                 runs.log(run_id, [f"links phase failed: {e} (scrape is unaffected)"])
-        phase_ingest(run_id, a.connector)
+                linked = {'failed': 1, 'complete': False}
+        _check_cancel()
+        phase_ingest(run_id, a.connector, project_id)
+        result = {}
         if not a.skip_absorb:
-            phase_absorb(run_id, units_for(_pending_text(), a.connector),
-                         a.max_tokens, project_id)
+            from server import sources, corpus
+            ids = sources.auto_candidates(project_id, a.connection_id, a.connector)
+            sources.set_queued(project_id, ids, True)
+            result = phase_absorb(run_id, ids, a.max_tokens, project_id, automatic=True)
+            corpus.sync()
             phase_push(run_id)
-        runs.finish(run_id, status="ok")
+        _check_cancel()
+        partial = (scraped.get('failed') or not scraped.get('complete', True)
+                   or linked.get('failed') or not linked.get('complete', True)
+                   or result.get('failed'))
+        runs.finish(run_id, status='partial' if partial else "ok")
         runs.log(run_id, ["done"])
         return 0
+    except Cancelled:
+        from server import ingest_units
+        if a.connector == 'github' and a.connection_id:
+            from server import repos
+            row = repos._require(a.connection_id)
+            repos.update(a.connection_id, state='ingested' if row.get('clone_path') else 'added')
+        ingest_units.reset_stale(project_id, run_id=run_id)
+        runs.finish(run_id, status='stopped')
+        runs.log(run_id, ['Stopped. Completed articles are saved; unfinished files remain queued.'])
+        return 0
     except Exception as e:
+        if a.connector == 'github' and a.connection_id:
+            from server import repos
+            repos.update(a.connection_id, state='failed', last_error=str(e)[:2000])
         runs.log(run_id, [f"FAILED: {type(e).__name__}: {e}"])
         runs.finish(run_id, status="error", error=str(e)[:2000])
         return 1
+    finally:
+        done.set()
+        if _file_lock:
+            _file_lock.close()
+            _file_lock = None
 
 
 if __name__ == "__main__":

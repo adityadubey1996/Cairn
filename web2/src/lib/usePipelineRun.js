@@ -51,11 +51,12 @@ export function usePipelineRun(runId, { onFinish, pollMs = POLL_MS } = {}) {
         setRun(row)
         const l = await api.pipelineRunLog(runId, seq.current)
         if (!alive) return
+        setError(null)
         if (l.lines.length) {
           seq.current = l.last
           setLines((prev) => [...prev, ...l.lines].slice(-MAX_LINES))
         }
-        if (row.status !== 'running') {
+        if (!['running', 'queued', 'cancelling'].includes(row.status)) {
           keepGoing = false
           onFinishRef.current?.(row)
         }
@@ -70,7 +71,7 @@ export function usePipelineRun(runId, { onFinish, pollMs = POLL_MS } = {}) {
     return () => { alive = false; if (timer) clearTimeout(timer) }
   }, [runId, pollMs])
 
-  const running = run?.status === 'running'
+  const running = ['running', 'queued', 'cancelling'].includes(run?.status)
   const pct = run?.items_seen
     ? Math.round((run.items_written / run.items_seen) * 100)
     : 0

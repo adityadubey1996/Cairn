@@ -11,6 +11,7 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from feeders.gdrive import sync
+from feeders.check_support import run_offline
 
 
 def check_list_owned() -> None:
@@ -24,7 +25,7 @@ def check_list_owned() -> None:
              "owners": [{"displayName": "Aditya"}]},
             {"id": "fx", "name": "budget.xlsx", "mimeType":
              "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-             "modifiedTime": "2026-08-06T12:00:00.000Z"}],  # not text — skipped
+             "modifiedTime": "2026-08-06T12:00:00.000Z"}],  # native Office extraction
          "nextPageToken": "p2"},
         {"files": [
             {"id": "fp", "name": "Q3 board deck.pdf", "mimeType": "application/pdf",
@@ -49,9 +50,9 @@ def check_list_owned() -> None:
     sync.config.GDRIVE_SOURCE_IDS = []
     sync.config.GDRIVE_EXCLUDE = ["salaries"]
     files = sync.list_drive_files(modified_after="2026-08-01T00:00:00Z")
-    assert [f["id"] for f in files] == ["f1", "fp", "f9"], files
+    assert [f["id"] for f in files] == ["f1", "fx", "fp", "f9"], files
     assert files[0]["authors"] == ["Aditya"] and files[1]["authors"] == []
-    assert files[2]["authors"] == ["Teammate"]
+    assert files[3]["authors"] == ["Teammate"]
     q0 = urllib.parse.unquote_plus(urls[0])
     assert "'me' in owners" in q0, q0
     assert "modifiedTime > '2026-08-01T00:00:00Z'" in q0, q0
@@ -240,7 +241,7 @@ def check_one_bad_file_does_not_abort_the_batch() -> None:
              "modified_time": "2026-01-01T00:00:00Z", "authors": []},
         ]
         sync.export_text = fake_export_text
-        seen, written = sync.run()
+        seen, written = run_offline(sync)
     assert "good" in calls, calls
     assert written == 1, written
 

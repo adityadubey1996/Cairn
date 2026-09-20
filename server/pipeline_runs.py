@@ -133,17 +133,21 @@ def get(run_id: str) -> dict | None:
                                   (run_id,)).fetchone())
 
 
-def recent(limit: int = 25, connector_id: str | None = None) -> list[dict]:
+def recent(limit: int = 25, connector_id: str | None = None, project_id: str | None = None) -> list[dict]:
     """Past runs, newest first.
 
     The history was always in this table; nothing exposed it, so a write-up
     could only be watched while the tab that started it stayed open. Losing the
     run id meant losing the run.
     """
-    where, args = "", []
+    clauses, args = [], []
     if connector_id:
-        where = "WHERE connector_id = %s"
+        clauses.append('connector_id = %s')
         args.append(connector_id)
+    if project_id:
+        clauses.append('project_id = %s')
+        args.append(project_id)
+    where = 'WHERE ' + ' AND '.join(clauses) if clauses else ''
     with connect() as c:
         rows = c.execute(
             f"SELECT * FROM brain_connector_runs {where} "
@@ -151,15 +155,16 @@ def recent(limit: int = 25, connector_id: str | None = None) -> list[dict]:
     return [_hydrate(r) for r in rows]
 
 
-def live(connector_id: str) -> dict | None:
+def live(connector_id: str, project_id: str | None = None) -> dict | None:
     """This connector's run in flight, or None. A stale heartbeat is not live."""
     with connect() as c:
         row = c.execute(
             "SELECT * FROM brain_connector_runs WHERE connector_id = %s "
-            "AND status = 'running' ORDER BY started_at DESC LIMIT 1",
-            (connector_id,)).fetchone()
+            "AND status IN ('queued','running','cancelling') "
+            + ('AND project_id = %s ' if project_id else '') + 'ORDER BY started_at DESC LIMIT 1',
+            (connector_id, project_id) if project_id else (connector_id,)).fetchone()
     row = _hydrate(row)
-    return row if row and row["status"] == LIVE_STATUS else None
+    return row if row and row['status'] in ('queued', LIVE_STATUS, 'cancelling') else None
 
 
 def absorb_rate(connector_id: str) -> dict | None:

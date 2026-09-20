@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Globe, Plug, Plus, TriangleAlert, X } from 'lucide-react'
+import { ArrowRight, Globe, Plug, Plus, TriangleAlert, X } from 'lucide-react'
 import * as api from '@/api'
 import { usePipelineRun } from '@/lib/usePipelineRun'
 import { ConnectorPicker } from './ConnectorPicker'
@@ -8,19 +8,7 @@ import { ConnectorCard } from '@/components/ConnectorCard'
 import { EmptyState } from '@/components/EmptyState'
 import { SkeletonList } from '@/components/SkeletonList'
 
-const GRID = 'grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3'
-
-function AddConnectorCard({ onAdd }) {
-  return (
-    <button
-      type="button" onClick={onAdd}
-      className="flex min-h-[128px] flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-border bg-card/40 p-3.5 text-muted-foreground transition-colors hover:border-primary hover:text-primary"
-    >
-      <Plus size={18} aria-hidden />
-      <span className="text-[12.5px] font-medium">Add connector</span>
-    </button>
-  )
-}
+const GRID = 'grid grid-cols-1 gap-3 lg:grid-cols-2'
 
 // A card that follows its own sync. The hook cannot be called in a loop over
 // connections (rules of hooks), so each card owns one — which also means two
@@ -28,11 +16,11 @@ function AddConnectorCard({ onAdd }) {
 //
 // `note` and `status` are existing ConnectorCard props, so live progress needed
 // no change to the card itself.
-function ConnectionCard({ connection, runId, onSync, onRemove, onFinish }) {
+function ConnectionCard({ connection, runId, onSync, onRemove, onFinish, onOpen }) {
   const { run, running, pct } = usePipelineRun(runId, { onFinish })
 
   const progress = running && run
-    ? `${run.phase ?? 'starting'}`
+    ? `${run.status === 'queued' ? 'Waiting for worker' : run.status === 'cancelling' ? 'Stopping' : run.phase ?? 'Starting'}`
       + (run.items_seen ? ` · ${run.items_written}/${run.items_seen}` : '')
     : null
 
@@ -40,12 +28,14 @@ function ConnectionCard({ connection, runId, onSync, onRemove, onFinish }) {
     <ConnectorCard
       connection={{
         ...connection,
-        status: running ? 'running' : connection.status,
+        status: running ? run.status : connection.status,
         note: progress ?? connection.note,
       }}
       progress={running && run?.items_seen ? pct : null}
       onSync={onSync}
       onRemove={onRemove}
+      onOpen={onOpen}
+      openLabel={connection.kind === 'github' ? 'Open repository' : 'Open files'}
     />
   )
 }
@@ -53,7 +43,7 @@ function ConnectionCard({ connection, runId, onSync, onRemove, onFinish }) {
 
 // One card per CONNECTION, never per connector type — two GitHub repos are
 // two rows in connector_connections and two cards here.
-export function Health({ projectId, projectName, forced, onGoFiles }) {
+export function Health({ projectId, projectName, forced, onGoFiles, onNavigate }) {
   const [connections, setConnections] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -79,8 +69,25 @@ export function Health({ projectId, projectName, forced, onGoFiles }) {
   useEffect(() => {
     let cancelled = false
     setLoading(true)
-    api.listConnections(projectId)
-      .then((rows) => !cancelled && setConnections(rows))
+    Promise.all([
+      api.listConnections(projectId),
+      api.listRepos(projectId).catch(() => ({ repos: [] })),
+    ])
+      .then(([rows, repoData]) => {
+        if (cancelled) return
+        const repos = new Map((repoData.repos || []).map((repo) => [repo.id, repo]))
+        setConnections(rows.map((connection) => {
+          const repo = connection.kind === 'github' ? repos.get(connection.id) : null
+          if (!repo) return connection
+          return {
+            ...connection,
+            pendingCount: repo.queue_new ?? 0,
+            absorbedCount: repo.absorbed ?? 0,
+            articleCount: repo.articles ?? 0,
+            itemCount: (repo.queue_new ?? 0) + (repo.absorbed ?? 0),
+          }
+        }))
+      })
       .catch((e) => !cancelled && setError(e))
       .finally(() => !cancelled && setLoading(false))
     return () => { cancelled = true }
@@ -157,7 +164,7 @@ export function Health({ projectId, projectName, forced, onGoFiles }) {
         <div>
           <div className="text-[13.5px] font-semibold">Add a connector</div>
           <div className="text-[12px] text-muted-foreground">
-            It joins {projectName ?? 'this project'}. One sign-in per provider covers everything under it.
+            Add a source to {projectName ?? 'this project'}, then inspect its files and choose an absorption policy.
           </div>
         </div>
         <Button variant="ghost" size="icon-sm" aria-label="Close" onClick={() => setPicking(false)}>
@@ -170,6 +177,7 @@ export function Health({ projectId, projectName, forced, onGoFiles }) {
         projectId={projectId}
         connectedKinds={rows.map((c) => c.kind)}
         markConnected={false}
+        onNavigate={onNavigate}
         onConnected={({ connectionId, runId } = {}) => {
           setPicking(false)
           if (connectionId && runId) setRunIds((m) => ({ ...m, [connectionId]: runId }))
@@ -201,36 +209,48 @@ export function Health({ projectId, projectName, forced, onGoFiles }) {
     <div className="mx-auto w-full max-w-5xl">
       {picking && picker}
 
-      {/* Links used to be dragged behind every sync, which is what made an
-          incremental sync take an hour. It is project-wide work, so it lives
-          here rather than on any one connector's card. */}
-      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card/40 px-3 py-2">
-        <Globe size={14} className="shrink-0 text-muted-foreground" aria-hidden />
-        <span className="text-[12.5px]">Links found in your content</span>
-        <span className="text-[11.5px] text-muted-foreground">
-          Fetched separately — it runs across the whole project and can take a while.
-        </span>
-        <Button size="xs" variant="outline" className="ml-auto"
-                disabled={linksBusy} onClick={fetchLinks}>
-          {linksBusy ? 'Fetching…' : 'Fetch links'}
-        </Button>
+      <div className="mb-4 rounded-lg border border-border bg-card/40 px-3.5 py-3">
+        <div className="flex flex-wrap items-center gap-2 text-[12.5px] font-medium">
+          <span>Sync</span><ArrowRight size={13} className="text-muted-foreground" aria-hidden />
+          <span>Inspect</span><ArrowRight size={13} className="text-muted-foreground" aria-hidden />
+          <span>Absorb</span>
+        </div>
+        <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
+          Sync imports source material. Inspect regular sources in Files and GitHub sources in Repos,
+          then choose what becomes durable knowledge in the wiki.
+        </p>
       </div>
 
-      <div className="flex items-center justify-between pb-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5">
         <span className="text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
           {rows.length} connection{rows.length === 1 ? '' : 's'}
         </span>
+        <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
+          <Plus size={13} aria-hidden /> Add connector
+        </Button>
       </div>
       <div className={GRID}>
         {rows.map((c) => (
           <ConnectionCard
-            key={c.id} connection={c} runId={runIds[c.id]}
+            key={c.id} connection={c} runId={runIds[c.id] ?? c.runId}
             onSync={(_c, opts) => (c.kind === 'upload' ? onGoFiles?.() : sync(c, opts))}
             onRemove={() => remove(c)}
             onFinish={() => syncFinished(c.id)}
+            onOpen={() => onNavigate?.(c.kind === 'github' ? 'repos' : 'files')}
           />
         ))}
-        <AddConnectorCard onAdd={() => setPicking(true)} />
+      </div>
+
+      {/* Link fetching is project-wide and can take much longer than a
+          connector sync, so it stays explicit and separate from every card. */}
+      <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
+        <Globe size={14} className="shrink-0 text-muted-foreground" aria-hidden />
+        <span className="text-[12px]">Fetch links found inside synced content</span>
+        <span className="text-[11.5px] text-muted-foreground">Runs across the whole project.</span>
+        <Button size="xs" variant="ghost" className="ml-auto"
+                disabled={linksBusy} onClick={fetchLinks}>
+          {linksBusy ? 'Fetching…' : 'Fetch links'}
+        </Button>
       </div>
     </div>
   )

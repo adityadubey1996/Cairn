@@ -4,7 +4,13 @@
 export const STATUS = {
   ok: { tone: 'ok', label: 'synced' },
   running: { tone: 'warn', label: 'syncing…' },
+  queued: { tone: 'idle', label: 'queued' },
+  cancelling: { tone: 'warn', label: 'stopping…' },
+  stopped: { tone: 'idle', label: 'stopped' },
+  interrupted: { tone: 'warn', label: 'interrupted' },
+  partial: { tone: 'warn', label: 'partially synced' },
   error: { tone: 'bad', label: 'error' },
+  failed: { tone: 'bad', label: 'failed' },
   never_run: { tone: 'idle', label: 'never run' },
   not_configured: { tone: 'idle', label: 'not configured' },
 }

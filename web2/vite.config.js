@@ -11,13 +11,12 @@ export default defineConfig({
     },
   },
   server: {
-    // 8300 is the only backend now — app.py serves web2/dist, so V1 is no
-    // longer a separate stack worth reserving a port for. It is also the port
-    // the Google OAuth client's redirect URI is registered against.
+    // Dev only; the server itself serves web2/dist. CAIRN_API points the
+    // proxy at a server on another port — it must match that server's PORT.
     port: 5174,
     proxy: {
-      '/api': 'http://localhost:8300',
-      '/health': 'http://localhost:8300',
+      '/api': process.env.CAIRN_API || 'http://localhost:8300',
+      '/health': process.env.CAIRN_API || 'http://localhost:8300',
     },
   },
 })

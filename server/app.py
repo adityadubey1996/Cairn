@@ -8,7 +8,7 @@ from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from . import config, connectors, corpus, models, projects, storage
+from . import config, connectors, corpus, models, projects, storage, jobs
 from .auth import current_user, router as auth_router
 from .routers.chat import router as chat_router
 from .routers.connections import router as connections_router
@@ -55,10 +55,20 @@ async def _connector_loop():
         await asyncio.sleep(config.CONNECTOR_SYNC_INTERVAL_MIN * 60)
         for cid in ("whatsapp", "linkedin"):
             try:
-                r = await asyncio.to_thread(connectors.run_now, cid)
+                project_id = await asyncio.to_thread(projects.ensure_default)
+                r = await asyncio.to_thread(jobs.submit, cid, project_id)
                 log.info("connector %s: %s", cid, r)
             except Exception as e:
                 log.warning("connector %s run failed: %s", cid, e)
+
+
+async def _job_loop():
+    while True:
+        try:
+            await asyncio.to_thread(jobs.tick)
+        except Exception:
+            log.exception('pipeline worker tick failed')
+        await asyncio.sleep(2)
 
 
 @asynccontextmanager
@@ -77,11 +87,13 @@ async def lifespan(app: FastAPI):
         # the local volume, or the git-seeded image, is still a valid wiki.
         log.exception("s3 pull failed; continuing with the local wiki")
     task = asyncio.create_task(_sync_loop())  # boot sync + 15-min guarantee
+    worker_task = asyncio.create_task(_job_loop())
     connector_task = None
     if config.CONNECTOR_SYNC_INTERVAL_MIN > 0:
         connector_task = asyncio.create_task(_connector_loop())
     yield
     task.cancel()
+    worker_task.cancel()
     if connector_task:
         connector_task.cancel()
 

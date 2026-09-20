@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
-"""Self-check for connections.sync()'s two branches.
-Run: python3 server/test_connections_sync.py
+"""Connections submit durable jobs with the saved absorption policy.
 
-The github branch is here because it regressed silently: run_sync returns step
-results, not a repo row, and the resulting KeyError surfaced as a 404 only
-AFTER a successful clone/graph/ingest. Nothing about the failure pointed at the
-return shape.
+No network, Postgres or subprocesses: queue execution belongs to jobs.tick().
+Run: python3 server/test_connections_sync.py
 """
 import sys
 from pathlib import Path
@@ -22,63 +19,52 @@ REPO_ROW = {
 }
 
 
-def test_github_sync_returns_the_repo_row_not_the_step_results():
-    steps = {"clone": {}, "graph": {}, "ingest": {}}
-    with patch.object(connections.repos, "run_sync", return_value=steps) as run_sync, \
-         patch.object(connections.repos, "get", return_value=REPO_ROW):
+def test_github_sync_queues_the_repo_with_its_saved_absorption_policy():
+    with patch.object(connections.repos, "run_sync") as run_sync, \
+         patch.object(connections.repos, "get", return_value=REPO_ROW), \
+         patch.object(connections.automation, "get", return_value={"auto_absorb": True}), \
+         patch.object(connections.jobs, "submit", return_value={"run_id": "job-1", "status": "queued"}) as submit:
         got = connections.sync("owner/repo")
-    run_sync.assert_called_once_with("owner/repo")
-    assert got["id"] == "owner/repo", got
-    assert got["kind"] == "github", got
-    assert got["itemCount"] == 12, got
+    run_sync.assert_not_called()
+    submit.assert_called_once_with("github", "default", connection_id="owner/repo", absorb=True, full=False)
+    assert got == {"id": "owner/repo", "status": "queued", "runId": "job-1"}
 
 
 def test_github_sync_raises_when_the_repo_vanished():
-    with patch.object(connections.repos, "run_sync", return_value={}), \
-         patch.object(connections.repos, "get", return_value=None):
+    with patch.object(connections.repos, "get", return_value=None), \
+         patch.object(connections.jobs, "submit") as submit:
         try:
             connections.sync("owner/gone")
         except KeyError:
+            submit.assert_not_called()
             return
     raise AssertionError("a missing repo must raise, not return a half-built row")
 
 
-def test_non_github_sync_spawns_the_runner_instead_of_blocking():
-    """sync() used to call the feeder inline, which held the request thread for
-    the whole scrape plus the S3 push and returned no handle. It now spawns the
-    phased runner and hands back a run id to poll."""
+def test_source_sync_uses_its_project_and_can_remain_manual_absorb():
     row = {"id": "gdrive-abc123", "project_id": "proj-7", "kind": "gdrive",
            "name": "Google Drive", "config": {}}
     with patch.object(connections, "_require", return_value=row), \
-         patch.object(connections.pipeline_runs, "live", return_value=None), \
-         patch.object(connections.pipeline_runs, "start", return_value="run-9"), \
+         patch.object(connections.automation, "get", return_value={"auto_absorb": False}), \
+         patch.object(connections.jobs, "submit", return_value={"run_id": "run-9", "status": "queued"}) as submit, \
          patch.object(connections.subprocess, "Popen") as popen:
-        got = connections.sync("gdrive-abc123")
-
-    assert got == {"id": "gdrive-abc123", "status": "running", "runId": "run-9"}, got
-    argv = popen.call_args[0][0]
-    assert "--connector" in argv and argv[argv.index("--connector") + 1] == "gdrive", argv
-    assert argv[argv.index("--run-id") + 1] == "run-9", argv
-    # the connection's own project, not the default one
-    assert argv[argv.index("--project-id") + 1] == "proj-7", argv
-    # absorb is the only phase that spends money; this path never runs it
-    assert "--skip-absorb" in argv, argv
-    # detached, so a redeploy of the server does not signal the run
-    assert popen.call_args[1]["start_new_session"] is True
+        got = connections.sync("gdrive-abc123", full=True)
+    assert got == {"id": "gdrive-abc123", "status": "queued", "runId": "run-9"}
+    submit.assert_called_once_with("gdrive", "proj-7", connection_id="gdrive-abc123", absorb=False, full=True)
+    popen.assert_not_called()
 
 
-def test_a_second_sync_while_one_is_in_flight_is_refused():
+def test_an_existing_queued_or_running_job_keeps_its_handle():
     row = {"id": "gdrive-abc123", "project_id": "proj-7", "kind": "gdrive",
            "name": "Google Drive", "config": {}}
     with patch.object(connections, "_require", return_value=row), \
-         patch.object(connections.pipeline_runs, "live", return_value={"id": "run-1"}), \
+         patch.object(connections.automation, "get", return_value={"auto_absorb": True}), \
+         patch.object(connections.jobs, "submit", return_value={"run_id": "run-1", "status": "running", "existing": True}), \
          patch.object(connections.subprocess, "Popen") as popen:
-        try:
-            connections.sync("gdrive-abc123")
-        except connections.Invalid:
-            popen.assert_not_called()
-            return
-    raise AssertionError("a concurrent run must be refused, not spawned alongside")
+        first = connections.sync("gdrive-abc123")
+        second = connections.sync("gdrive-abc123")
+    assert first == second == {"id": "gdrive-abc123", "status": "running", "runId": "run-1"}
+    popen.assert_not_called()
 
 
 if __name__ == "__main__":

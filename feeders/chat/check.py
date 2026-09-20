@@ -7,6 +7,7 @@ import urllib.parse
 from pathlib import Path
 
 from feeders.chat import sync
+from feeders.check_support import run_offline
 
 
 def check_list_spaces() -> None:
@@ -76,7 +77,7 @@ def check_run() -> None:
             {"createTime": "2026-08-13T08:00:00.000000Z", "text": "   ",
              "sender": {"name": "users/111", "displayName": "Aditya Dubey"}}]
 
-        seen, written = sync.run()
+        seen, written = run_offline(sync)
         # the whitespace-only 08-13 message must not become an entry
         assert (seen, written) == (1, 1), (seen, written)
         entry = (root / "raw/inbox/gchat-AAA111-2026-08-12.md").read_text()
@@ -88,7 +89,7 @@ def check_run() -> None:
         assert 'authors: ["Aditya Dubey", "222"]' in entry
         assert (root / "sources/gchat/eng-standup-2026-08-12-aaa111.md").is_file()
 
-        seen, written = sync.run()
+        seen, written = run_offline(sync)
         assert (seen, written) == (1, 0), "unchanged day must not rewrite"
 
 
@@ -98,13 +99,13 @@ def check_one_bad_space_does_not_abort_the_batch() -> None:
         sync.config.GDRIVE_TARGET_REPO = Path(d)
         sync.list_spaces = lambda: [
             {"name": "spaces/bad"}, {"name": "spaces/good", "displayName": "Good"}]
-        def fake_list_messages(space_name, created_after):
+        def fake_list_messages(space_name, created_after=""):
             if "bad" in space_name:
                 raise RuntimeError("boom")
             return [{"createTime": "2026-01-01T10:00:00Z", "text": "hi",
                      "sender": {"displayName": "A"}}]
         sync.list_messages = fake_list_messages
-        seen, written = sync.run()
+        seen, written = run_offline(sync)
     assert written == 1, written
 
 

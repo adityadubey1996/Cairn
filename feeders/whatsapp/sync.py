@@ -28,6 +28,7 @@ from datetime import date, timedelta
 
 from server import config, sources as sources_index
 from feeders.browser import sessions
+from feeders.result import SyncResult, failure
 
 log = logging.getLogger("cairn.whatsapp")
 
@@ -101,7 +102,6 @@ def write_days(group: str, msgs: list[dict], sources, inbox,
             f'time: "{dmsgs[-1]["time"]}:00"\n'
             f"authors: [{', '.join(json.dumps(a) for a in authors)}]\n"
             "---\n\n" + text + "\n")
-        indexed = False
         if existing == sha:
             # content unchanged → don't rewrite the source, but self-heal a
             # missing inbox entry so a never-changing day can't fall out of the
@@ -109,13 +109,11 @@ def write_days(group: str, msgs: list[dict], sources, inbox,
             if not inbox_path.is_file():
                 inbox_path.write_text(entry, encoding="utf-8")
                 written += 1
-                indexed = True
         else:
             source_path.write_text(text, encoding="utf-8")
             inbox_path.write_text(entry, encoding="utf-8")
             written += 1
-            indexed = True
-        if indexed and project_id:
+        if project_id:
             sources_index.record(
                 id=f"whatsapp-{slug}", project_id=project_id, kind="whatsapp",
                 name=f"{group} — {day}", path=f"sources/whatsapp/{slug}.md",
@@ -134,6 +132,7 @@ async def _run(project_id: str | None = None, on_progress=None,
     since = _since()
     from .graph import scrape_group  # local import: keeps sync.py importable
     seen = written = 0               # even if langgraph isn't installed yet
+    failures = []
     groups = config.WHATSAPP_GROUPS
     for n, group in enumerate(groups, 1):
         if on_progress:
@@ -141,14 +140,16 @@ async def _run(project_id: str | None = None, on_progress=None,
         try:
             gs, gw, err = await scrape_group(group, since, s["cdp_url"],
                                              project_id, connection_id)
-        except Exception:
+        except Exception as e:
             log.exception("whatsapp %r: crashed, skipping", group)
+            failures.append(failure(f"whatsapp-{_slug(group)}", group, e))
             continue
         if err:
             log.warning("whatsapp %r: %s", group, err)
+            failures.append(failure(f"whatsapp-{_slug(group)}", group, err))
         seen += gs
         written += gw
-    return seen, written
+    return SyncResult(seen, written, failures)
 
 
 def run(project_id: str | None = None, on_progress=None,

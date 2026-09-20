@@ -58,7 +58,7 @@ const Err = ({ children }) => (
   </p>
 )
 
-function AddRepo({ onAdded }) {
+function AddRepo({ onAdded, projectId }) {
   const [url, setUrl] = useState('')
   const [probe, setProbe] = useState(null)
   const [branch, setBranch] = useState('')
@@ -80,7 +80,7 @@ function AddRepo({ onAdded }) {
   async function add() {
     setBusy(true); setError(null)
     try {
-      await api.addRepo(url, branch, token)
+      await api.addRepo(url, branch, token, projectId)
       setUrl(''); setProbe(null); setBranch(''); setToken(''); onAdded()
     } catch (e) { setError(String(e.message || e)) } finally { setBusy(false) }
   }
@@ -207,8 +207,17 @@ function Queue({ repoId, onAbsorbKind }) {
   if (error) return <Err>{error}</Err>
   if (!q) return <p className="mt-3 text-[12.5px] text-muted-foreground">loading queue…</p>
 
-  const rows = [...q.changed.map((r) => ({ ...r, why: 'changed' })),
-                ...q.new.map((r) => ({ ...r, why: 'new' }))]
+  const allRows = [...q.changed.map((r) => ({ ...r, why: 'changed' })),
+                   ...q.new.map((r) => ({ ...r, why: 'new' }))]
+  // The endpoint keeps absorbed units in the manifest for provenance. They
+  // are history, not work left to buy, so the open queue must match the count
+  // on the repository card.
+  const rows = allRows.filter((r) => !r.absorbed)
+  const alreadyAbsorbed = allRows.length - rows.length
+  const byKind = rows.reduce((counts, row) => ({
+    ...counts,
+    [row.kind]: (counts[row.kind] || 0) + 1,
+  }), {})
   const shown = kind ? rows.filter((r) => r.kind === kind) : rows
 
   return (
@@ -217,7 +226,7 @@ function Queue({ repoId, onAbsorbKind }) {
         <Button variant={kind ? 'ghost' : 'outline'} size="sm" onClick={() => setKind('')}>
           all {rows.length}
         </Button>
-        {Object.entries(q.by_kind).sort((a, b) => b[1] - a[1]).map(([k, n]) => (
+        {Object.entries(byKind).sort((a, b) => b[1] - a[1]).map(([k, n]) => (
           <Button
             key={k} size="sm" variant={kind === k ? 'outline' : 'ghost'}
             onClick={() => setKind(kind === k ? '' : k)}
@@ -225,8 +234,13 @@ function Queue({ repoId, onAbsorbKind }) {
         ))}
         {kind && (
           <Button size="sm" onClick={() => onAbsorbKind(kind, shown.length)}>
-            Absorb {kind} · paid
+            Absorb {kind}
           </Button>
+        )}
+        {alreadyAbsorbed > 0 && (
+          <span className="ml-auto text-[11.5px] text-muted-foreground">
+            {alreadyAbsorbed} already absorbed
+          </span>
         )}
       </div>
 
@@ -254,10 +268,15 @@ function Queue({ repoId, onAbsorbKind }) {
   )
 }
 
-function RepoCard({ r, onRun, onDelete, groq, onConfirm }) {
-  const [tone, label] = REPO_STATE[r.state] || ['idle', r.state]
+function RepoCard({ r, onRun, onDelete, modelReady, onConfirm, onNavigate }) {
+  const recentStatus = r.active_run?.status || r.last_run?.status
+  const activeLabel = recentStatus === 'queued' ? 'Queued' : recentStatus === 'cancelling' ? 'Stopping' : null
+  const running = r.active_run?.phase || r.active_run?.step || r.running_step
+  const [tone, label] = running ? ['warn', activeLabel || 'Running']
+    : recentStatus === 'stopped' || recentStatus === 'interrupted' ? ['idle', recentStatus]
+    : recentStatus === 'error' || recentStatus === 'failed' || recentStatus === 'partial' ? ['bad', recentStatus === 'error' ? 'failed' : recentStatus]
+    : REPO_STATE[r.state] || ['idle', r.state]
   const [open, setOpen] = useState('')   // '' | 'commits' | 'queue'
-  const running = r.running_step
   const queued = (r.queue_new || 0) + (r.queue_changed || 0)
   const cloned = !!r.clone_path && r.state !== 'added'
 
@@ -266,7 +285,7 @@ function RepoCard({ r, onRun, onDelete, groq, onConfirm }) {
       <div className="flex flex-wrap items-center gap-2">
         <span className={cn('size-2 shrink-0 rounded-full', DOT[tone])} aria-hidden />
         <span className="font-mono text-[13px] font-medium">{r.id}</span>
-        <Pill tone={tone}>{running ? `${running}…` : label}</Pill>
+        <Pill tone={tone}>{label}</Pill>
         <Pill>{r.branch}</Pill>
         {r.pinned_sha && <Pill tone="warn">pinned @ {r.pinned_sha.slice(0, 8)}</Pill>}
       </div>
@@ -285,7 +304,7 @@ function RepoCard({ r, onRun, onDelete, groq, onConfirm }) {
       {running && (
         <p className="mt-2 flex items-center gap-2 text-[12.5px] text-warning">
           <Spinner className="size-3.5" />
-          running <b>{running}</b>
+          {activeLabel || 'Running'} · <b>{running}</b>
           {running === 'absorb' && <> · <b>{r.articles}</b> articles written so far</>}
         </p>
       )}
@@ -297,7 +316,7 @@ function RepoCard({ r, onRun, onDelete, groq, onConfirm }) {
           {r.last_run.finished_at && ` · ${ago(r.last_run.finished_at)}`}
         </p>
       )}
-      {r.last_error && <Err>{r.last_error}</Err>}
+      {(r.last_run?.error || r.last_error) && <Err>{r.last_run?.error || r.last_error}</Err>}
 
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" onClick={() => onRun(r.id, 'sync')} disabled={!!running}>
@@ -315,17 +334,17 @@ function RepoCard({ r, onRun, onDelete, groq, onConfirm }) {
             separate and always behind a confirmation. */}
         <Button
           variant="outline" size="sm"
-          disabled={!!running || !cloned || !groq || queued === 0}
-          title={!groq ? 'GROQ_API_KEY is not set' : queued === 0 ? 'nothing queued' : ''}
+          disabled={!!running || !cloned || !modelReady || queued === 0}
+          title={!modelReady ? 'Configure an answer model in Settings' : queued === 0 ? 'Nothing queued' : ''}
           onClick={() => onConfirm({
-            title: 'Absorb 5 units · paid',
+            title: 'Absorb 5 units',
             detail: r.pinned_sha
               ? `This rewrites current articles using code from ${r.pinned_sha.slice(0, 8)}, which is older than the branch head.`
-              : `Absorb up to 5 units for ${r.id}. This calls Groq and costs money.`,
+              : `Absorb up to 5 units for ${r.id} using your configured model.`,
             confirmLabel: 'Absorb',
-            run: () => onRun(r.id, 'absorb', { limit: 5 }),
+            run: () => onRun(r.id, 'absorb', { kind: '', limit: 5 }),
           })}
-        >Absorb ×5 · paid</Button>
+        >Absorb ×5</Button>
 
         <Button
           variant={open === 'queue' ? 'outline' : 'ghost'} size="sm" disabled={!cloned}
@@ -338,6 +357,7 @@ function RepoCard({ r, onRun, onDelete, groq, onConfirm }) {
         >Commits</Button>
         <Button
           variant="ghost" size="sm" className="text-destructive hover:text-destructive"
+          disabled={!!running}
           onClick={() => onConfirm({
             title: `Stop tracking ${r.id}?`,
             detail: 'The clone is deleted from disk. Every wiki article it produced is kept.',
@@ -346,13 +366,16 @@ function RepoCard({ r, onRun, onDelete, groq, onConfirm }) {
             run: () => onDelete(r.id),
           })}
         >Remove</Button>
+        {r.last_run && <Button variant="ghost" size="sm" onClick={() => onNavigate?.('pipeline')}>
+          View pipeline
+        </Button>}
       </div>
 
       {r.pinned_sha && (
         <p className="mt-2 text-[12.5px] text-muted-foreground">
           Parked on an older commit. Ingesting with no commit returns to{' '}
           <span className="font-mono">{r.branch}</span>.{' '}
-          <Button variant="ghost" size="sm" onClick={() => onRun(r.id, 'ingest')}>
+          <Button variant="ghost" size="sm" disabled={!!running} onClick={() => onRun(r.id, 'ingest')}>
             Back to head
           </Button>
         </p>
@@ -362,8 +385,8 @@ function RepoCard({ r, onRun, onDelete, groq, onConfirm }) {
         <Queue
           repoId={r.id}
           onAbsorbKind={(kind, n) => onConfirm({
-            title: `Absorb ${kind} · paid`,
-            detail: `Absorb up to ${Math.min(n, 30)} ${kind} units for ${r.id}. This calls Groq and costs money.`,
+            title: `Absorb ${kind}`,
+            detail: `Absorb up to ${Math.min(n, 30)} ${kind} units for ${r.id} using your configured model.`,
             confirmLabel: 'Absorb',
             run: () => onRun(r.id, 'absorb', { kind, limit: Math.min(n, 30) }),
           })}
@@ -385,17 +408,24 @@ function RepoCard({ r, onRun, onDelete, groq, onConfirm }) {
   )
 }
 
-export function Repos() {
+export function Repos({ projectId, onNavigate }) {
   const [data, setData] = useState(null)
   const [error, setError] = useState(null)
   const [pending, setPending] = useState(null)
+  const [modelReady, setModelReady] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    api.getSettings().then((s) => { if (alive) setModelReady(!!s.effective?.model) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
 
   const load = useCallback(async () => {
     try {
-      setData(await api.listRepos())
+      setData(await api.listRepos(projectId))
       setError(null)
     } catch (e) { setError(String(e.message || e)) }
-  }, [])
+  }, [projectId])
 
   // Steps run in the background and return 202, so the screen polls. 4s is
   // fast enough to feel live and slow enough that a clone is not hammered.
@@ -411,7 +441,7 @@ export function Repos() {
   }
 
   async function sweep() {
-    try { await api.sweepRepos(); load() }
+    try { await api.sweepRepos(projectId); load() }
     catch (e) { setError(String(e.message || e)) }
   }
 
@@ -420,7 +450,7 @@ export function Repos() {
     catch (e) { setError(String(e.message || e)) }
   }
 
-  const anyBusy = data?.repos.some((r) => r.running_step)
+  const anyBusy = data?.repos.some((r) => r.active_run || r.running_step)
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -439,8 +469,8 @@ export function Repos() {
 
       <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-3 pb-8">
         <p className="text-[12.5px] text-muted-foreground">
-          Repos cloned here and turned into wiki articles — public, or private with a token. Cloning, graphing
-          and ingesting are free; absorb calls Groq and is the only step that costs money.
+          Clone a public repository, or connect a private one with a token. Inspect its files and absorb them
+          into wiki articles using your configured local or hosted model.
         </p>
 
         {/* A failed first load must not read as a spinner that never resolves —
@@ -450,19 +480,19 @@ export function Repos() {
                 : <p className="mt-4 text-[12.5px] text-muted-foreground">loading…</p>
         ) : (
           <div className="mt-3 flex flex-col gap-3">
-            {!data.groq_configured && (
+            {!modelReady && (
               <p className="text-[12.5px] text-warning">
-                GROQ_API_KEY is not set — every free step works, absorb is disabled.
+                Choose an answer model to enable absorption. <button className="text-primary hover:underline" onClick={() => onNavigate?.('settings')}>Open Settings</button>
               </p>
             )}
             {error && <Err>{error}</Err>}
 
-            {data.repos.length < data.max_tracked && <AddRepo onAdded={load} />}
+            {data.repos.length < data.max_tracked && <AddRepo projectId={projectId} onAdded={load} />}
 
             {data.repos.map((r) => (
               <RepoCard
                 key={r.id} r={r} onRun={run} onDelete={remove}
-                groq={data.groq_configured} onConfirm={setPending}
+                modelReady={modelReady} onConfirm={setPending} onNavigate={onNavigate}
               />
             ))}
 

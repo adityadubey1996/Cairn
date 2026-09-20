@@ -176,6 +176,12 @@ ALTER TABLE brain_sources ADD COLUMN IF NOT EXISTS original_path text;
 -- answered by articles_citing(), which reads the citations articles actually
 -- carry, and a second copy of that truth could only drift from it.
 ALTER TABLE brain_sources ADD COLUMN IF NOT EXISTS wiki_queued_at timestamptz;
+-- Pipeline Phase A columns (also in server/pipeline/schema.py). Kept here so
+-- app startup applies them without a separate migrate step.
+ALTER TABLE brain_sources ADD COLUMN IF NOT EXISTS source_type text;
+ALTER TABLE brain_sources ADD COLUMN IF NOT EXISTS occurred_at date;
+ALTER TABLE brain_sources ADD COLUMN IF NOT EXISTS found_in text;
+ALTER TABLE brain_sources ADD COLUMN IF NOT EXISTS publisher jsonb NOT NULL DEFAULT '[]';
 
 CREATE INDEX IF NOT EXISTS brain_sources_project
   ON brain_sources (project_id, scraped_at DESC);
@@ -205,6 +211,34 @@ CREATE TABLE IF NOT EXISTS brain_run_log (
   at     timestamptz NOT NULL DEFAULT now(),
   line   text NOT NULL,
   PRIMARY KEY (run_id, seq)
+);
+
+-- Persistent connection schedules and work survive closing the browser/server.
+CREATE TABLE IF NOT EXISTS brain_connection_policies (
+  connection_id text PRIMARY KEY,
+  project_id text NOT NULL REFERENCES brain_projects(id) ON DELETE CASCADE,
+  sync_enabled boolean NOT NULL DEFAULT false,
+  schedule_minutes integer NOT NULL DEFAULT 60,
+  cron_expression text NOT NULL DEFAULT '',
+  timezone text NOT NULL DEFAULT 'Asia/Kolkata',
+  auto_absorb boolean NOT NULL DEFAULT false,
+  next_run_at timestamptz,
+  last_run_at timestamptz
+);
+ALTER TABLE brain_connector_runs ADD COLUMN IF NOT EXISTS project_id text;
+ALTER TABLE brain_connector_runs ADD COLUMN IF NOT EXISTS connection_id text;
+ALTER TABLE brain_connector_runs ADD COLUMN IF NOT EXISTS job jsonb;
+ALTER TABLE brain_connector_runs ADD COLUMN IF NOT EXISTS attempts integer NOT NULL DEFAULT 0;
+ALTER TABLE brain_connector_runs ADD COLUMN IF NOT EXISTS cancel_requested boolean NOT NULL DEFAULT false;
+ALTER TABLE brain_sources ADD COLUMN IF NOT EXISTS absorption_policy text NOT NULL DEFAULT 'inherit';
+ALTER TABLE brain_sources ADD COLUMN IF NOT EXISTS absorbed_sha text;
+ALTER TABLE brain_sources ADD COLUMN IF NOT EXISTS absorbed_at timestamptz;
+CREATE INDEX IF NOT EXISTS brain_runs_jobs ON brain_connector_runs(status, started_at) WHERE job IS NOT NULL;
+CREATE TABLE IF NOT EXISTS brain_oauth_states (
+  state_hash text PRIMARY KEY,
+  provider text NOT NULL,
+  payload jsonb NOT NULL,
+  expires_at timestamptz NOT NULL
 );
 """
 

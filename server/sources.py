@@ -19,7 +19,17 @@ log = logging.getLogger(__name__)
 
 FIELDS = ("id, project_id, connection_id, kind, type, name, path, url, "
           "detail, folder, bytes, sha, authors, scraped_at, status, error, "
-          "original_path, wiki_queued_at, found_in")
+          "original_path, wiki_queued_at, found_in, absorption_policy, absorbed_sha, absorbed_at")
+
+ABSORPTION_STATE = """CASE
+ WHEN status = 'failed' THEN 'failed'
+ WHEN EXISTS(SELECT 1 FROM brain_ingest_units u WHERE u.unit_id=brain_sources.id
+   AND u.project_id=brain_sources.project_id AND u.state='running') THEN 'absorbing'
+ WHEN EXISTS(SELECT 1 FROM brain_ingest_units u WHERE u.unit_id=brain_sources.id
+   AND u.project_id=brain_sources.project_id AND u.state='failed') THEN 'failed'
+ WHEN wiki_queued_at IS NOT NULL THEN 'queued'
+ WHEN absorbed_at IS NOT NULL AND absorbed_sha IS NOT DISTINCT FROM sha THEN 'absorbed'
+ ELSE 'extracted' END"""
 
 # Everything except the Sources listing wants fetched files only: a failed
 # row has no bytes to search, no path to cite and no authors to credit.
@@ -70,6 +80,9 @@ def record(*, id: str, project_id: str, kind: str, name: str, path: str,
     resets them so a retry that succeeds clears the previous failure instead of
     leaving a stale error on a row that now has content.
     """
+    if status == 'ok' and path.startswith('sources/'):
+        from .source_history import preserve
+        preserve(path)
     with connect() as c:
         c.execute(
             "INSERT INTO brain_sources (id, project_id, connection_id, kind, type, "
@@ -181,7 +194,8 @@ def set_queued(project_id: str, ids: list[str], queued: bool) -> int:
     with connect() as c:
         rows = c.execute(
             f"UPDATE brain_sources SET wiki_queued_at = {stamp} "
-            f"WHERE project_id = %s AND id = ANY(%s) AND {OK_ONLY} RETURNING id",
+            f"WHERE project_id = %s AND id = ANY(%s) AND {OK_ONLY} "
+            "AND absorption_policy <> 'exclude' RETURNING id",
             (project_id, list(ids))).fetchall()
     return len(rows)
 
@@ -193,6 +207,7 @@ def queued(project_id: str) -> list[dict]:
         return c.execute(
             f"SELECT {FIELDS} FROM brain_sources "
             f"WHERE project_id = %s AND wiki_queued_at IS NOT NULL AND {OK_ONLY} "
+            "AND absorption_policy <> 'exclude' "
             "ORDER BY wiki_queued_at, id", (project_id,)).fetchall()
 
 
@@ -342,7 +357,7 @@ def list_subfolders(project_id: str, *, kind: str, folder: str = "", q: str = ""
 def list_sources(project_id: str, *, q: str = "", kind: str | None = None,
                  status: str | None = None, connection_id: str | None = None,
                  group: str | None = None,
-                 limit: int = 500, cursor: str = "") -> dict:
+                 limit: int = 500, cursor: str = "", absorption_state: str | None = None) -> dict:
     """One page of this project's scraped files, newest first.
 
     Keyset paging rather than OFFSET: rows arrive continuously while a scrape
@@ -351,6 +366,9 @@ def list_sources(project_id: str, *, q: str = "", kind: str | None = None,
     the page size.
     """
     where, args = _filters(project_id, q, kind, status, connection_id, group)
+    if absorption_state:
+        where.append(f'({ABSORPTION_STATE}) = %s')
+        args.append(absorption_state)
 
     count_where, count_args = list(where), list(args)
     if cursor and (key := _decode_cursor(cursor)):
@@ -360,7 +378,10 @@ def list_sources(project_id: str, *, q: str = "", kind: str | None = None,
     args.append(limit)
     with connect() as c:
         rows = c.execute(
-            f"SELECT {FIELDS} FROM brain_sources WHERE {' AND '.join(where)} "
+            f"SELECT {FIELDS}, {ABSORPTION_STATE} AS absorption_state, "
+            "COALESCE((SELECT error FROM brain_ingest_units u WHERE u.unit_id=brain_sources.id "
+            "AND u.project_id=brain_sources.project_id), error) AS absorption_error "
+            f"FROM brain_sources WHERE {' AND '.join(where)} "
             "ORDER BY scraped_at DESC, id DESC LIMIT %s", args).fetchall()
         total = c.execute(
             f"SELECT count(*) AS n FROM brain_sources "
@@ -369,6 +390,54 @@ def list_sources(project_id: str, *, q: str = "", kind: str | None = None,
     # comes back empty rather than guessing from the row count.
     next_cursor = _encode_cursor(rows[-1]) if len(rows) == limit else None
     return {"rows": rows, "total": total, "cursor": next_cursor}
+
+
+def set_policy(project_id: str, ids: list[str], policy: str) -> int:
+    if policy not in ('inherit', 'manual', 'exclude'):
+        raise ValueError('absorption_policy must be inherit, manual, or exclude')
+    with connect() as c:
+        return c.execute("UPDATE brain_sources SET absorption_policy=%s, "
+                         "wiki_queued_at=CASE WHEN %s='exclude' THEN NULL ELSE wiki_queued_at END "
+                         'WHERE project_id=%s AND id=ANY(%s)', (policy, policy, project_id, ids)).rowcount
+
+
+def auto_candidates(project_id: str, connection_id: str, kind: str) -> list[str]:
+    with connect() as c:
+        rows = c.execute("SELECT id FROM brain_sources WHERE project_id=%s AND kind=%s AND status='ok' "
+                         "AND absorption_policy='inherit' AND absorbed_sha IS DISTINCT FROM sha "
+                         "AND (connection_id=%s OR (%s='' AND connection_id IS NULL)) ORDER BY scraped_at,id",
+                         (project_id, kind, connection_id, connection_id)).fetchall()
+    return [r['id'] for r in rows]
+
+
+def eligible(project_id: str, ids: list[str], *, automatic: bool = False) -> list[str]:
+    with connect() as c:
+        rows = c.execute("SELECT id FROM brain_sources WHERE project_id=%s AND id=ANY(%s) "
+                         "AND status='ok' AND wiki_queued_at IS NOT NULL AND "
+                         + ("absorption_policy='inherit'" if automatic else "absorption_policy!='exclude'"),
+                         (project_id, ids)).fetchall()
+    allowed = {r['id'] for r in rows}
+    return [uid for uid in ids if uid in allowed]
+
+
+def absorbed(project_id: str, unit_id: str, source_revision: str | None) -> bool:
+    if not source_revision:
+        return False
+    with connect() as c:
+        result = c.execute('UPDATE brain_sources SET absorbed_sha=sha,absorbed_at=now(),wiki_queued_at=NULL '
+                           'WHERE project_id=%s AND id=%s AND sha=%s',
+                           (project_id, unit_id, source_revision))
+    return bool(result.rowcount)
+
+
+def state_counts(project_id: str) -> dict:
+    with connect() as c:
+        rows = c.execute(f'SELECT {ABSORPTION_STATE} AS state,count(*) AS n FROM brain_sources '
+                         'WHERE project_id=%s GROUP BY 1', (project_id,)).fetchall()
+    result = {k: 0 for k in ('extracted','queued','absorbing','absorbed','failed')}
+    result.update({r['state']: r['n'] for r in rows})
+    result['total'] = sum(result.values())
+    return result
 
 
 def failure_reasons(project_id: str, kind: str | None = None) -> list[dict]:
@@ -466,8 +535,9 @@ def find(project_id: str, q: str, limit: int = 30,
             snippet = r["name"]
         else:
             try:
-                text = (config.ROOT / r["path"]).read_text(encoding="utf-8", errors="replace")
-            except OSError:
+                from pipeline.source_files import source_path
+                text = source_path(config.ROOT, r['path']).read_text(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
                 text = ""
             low = text.lower()
             at = low.find(needle)

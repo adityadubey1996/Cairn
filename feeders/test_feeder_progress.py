@@ -6,13 +6,27 @@ No network: the Drive and Chat list calls are monkeypatched. What is under test
 is the callback contract the pipeline runner depends on, not the fetching.
 """
 import sys
+from contextlib import contextmanager
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import feeders.gdrive.sync as gdrive  # noqa: E402
 import feeders.chat.sync as chat  # noqa: E402
 import feeders.links.sync as links  # noqa: E402
+
+
+@contextmanager
+def isolated_run():
+    """The advertised offline checks must not load the configured database."""
+    with TemporaryDirectory() as directory, \
+         patch("server.projects.ensure_default", return_value="test-project"), \
+         patch.object(gdrive.config, "SOURCES_DIR", Path(directory) / "sources"), \
+         patch.object(gdrive.config, "GDRIVE_TARGET_REPO", Path(directory)), \
+         patch.object(gdrive.sources_index, "record_failure"):
+        yield
 
 
 def test_gdrive_run_accepts_on_progress_and_reports_every_file():
@@ -23,7 +37,8 @@ def test_gdrive_run_accepts_on_progress_and_reports_every_file():
     gdrive.list_drive_files = lambda *_a, **_k: files
     gdrive.export_text = lambda _f: ""          # empty text short-circuits the write
     try:
-        gdrive.run(on_progress=lambda done, total, label: seen.append((done, total, label)))
+        with isolated_run():
+            gdrive.run(on_progress=lambda done, total, label: seen.append((done, total, label)))
     finally:
         gdrive.list_drive_files, gdrive.export_text = orig_list, orig_export
     assert seen == [(1, 2, "One"), (2, 2, "Two")], seen
@@ -34,7 +49,8 @@ def test_gdrive_run_still_works_with_no_callback():
     gdrive.list_drive_files = lambda *_a, **_k: []
     gdrive.export_text = lambda _f: ""
     try:
-        assert gdrive.run() == (0, 0)
+        with isolated_run():
+            assert gdrive.run() == (0, 0)
     finally:
         gdrive.list_drive_files, gdrive.export_text = orig_list, orig_export
 
@@ -49,7 +65,8 @@ def test_chat_run_reports_one_tick_per_space():
     chat.list_spaces = lambda *_a, **_k: spaces
     chat.list_messages = lambda *_a, **_k: []
     try:
-        chat.run(on_progress=lambda done, total, label: seen.append((done, total, label)))
+        with isolated_run():
+            chat.run(on_progress=lambda done, total, label: seen.append((done, total, label)))
     finally:
         chat.list_spaces, chat.list_messages = orig_spaces, orig_msgs
     assert seen == [(1, 2, "Alpha"), (2, 2, "Beta")], seen

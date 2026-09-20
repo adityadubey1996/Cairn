@@ -128,6 +128,7 @@ export function Wiki({ projectId, projectName, target, onNavigate }) {
           <div className="mx-auto w-full max-w-[860px]">
             <Reader
               path={selected}
+              projectId={projectId}
               nodes={data.nodes}
               state={state}
               absorbedAt={absorbedAt}

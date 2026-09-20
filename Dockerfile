@@ -16,8 +16,8 @@ WORKDIR /app
 # git: the connector clones with it, and ingest reads first-seen dates from the
 #      log, so a full history is required (never --depth).
 # ca-certificates: https clones.
-# pandoc / poppler-utils: optional binary-doc extraction. ingest degrades
-#      gracefully without them, but a .docx then absorbs as EXTRACTION FAILED.
+# pandoc / poppler-utils: preferred DOCX/PDF extraction, with Python fallbacks
+#      installed through requirements.txt for DOCX, XLSX, PPTX and PDF.
 # tesseract-ocr: scanned/photographed PDFs have no text layer for pdftotext or
 #      pypdf to read — feeders/gdrive/sync.py's _pdf_to_text() falls back to
 #      OCR only when both of those come back empty.

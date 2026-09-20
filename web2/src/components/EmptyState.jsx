@@ -2,7 +2,7 @@ import { cn } from '@/lib/utils'
 
 // The treatment is shared; the copy never is. Every screen passes its own
 // sentence — "No data" is not an acceptable message anywhere in this product.
-export function EmptyState({ icon: Icon, title, detail, action, className }) {
+export function EmptyState({ icon: Icon, title, detail, action, className, titleClassName, detailClassName }) {
   return (
     <div className={cn('flex flex-col items-center justify-center gap-2.5 px-6 py-10 text-center', className)}>
       {Icon && (
@@ -10,8 +10,8 @@ export function EmptyState({ icon: Icon, title, detail, action, className }) {
           <Icon size={20} aria-hidden />
         </span>
       )}
-      <div className="max-w-[320px] text-[13px] leading-relaxed text-foreground">{title}</div>
-      {detail && <div className="max-w-[320px] text-[11.5px] leading-relaxed text-muted-foreground">{detail}</div>}
+      <div className={cn('max-w-[320px] text-[13px] leading-relaxed text-foreground', titleClassName)}>{title}</div>
+      {detail && <div className={cn('max-w-[320px] text-[11.5px] leading-relaxed text-muted-foreground', detailClassName)}>{detail}</div>}
       {action}
     </div>
   )

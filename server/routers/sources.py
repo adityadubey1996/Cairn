@@ -11,29 +11,66 @@ unavoidable without cookies.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, Body, Depends, Header, HTTPException
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, FileResponse
 
-from .. import sources, storage
+from .. import sources, storage, source_history, connections
 from ..auth import current_user
 
 router = APIRouter(prefix="/api/sources")
 
-_ETAG = re.compile(r"[0-9a-f]{7,40}")
+_ETAG = re.compile(r"[0-9a-f]{7,64}")
 
 
 @router.get("")
 def list_sources(project_id: str, q: str = "", kind: str | None = None,
                  status: str | None = None, connection_id: str | None = None,
                  group: str | None = None, cursor: str = "", limit: int = 200,
+                 absorption_state: str | None = None,
                  _email: str = Depends(current_user)):
     if status not in (None, "", "ok", "failed"):
         raise HTTPException(400, "status must be 'ok' or 'failed'")
+    if absorption_state not in (None, '', 'extracted', 'queued', 'absorbing', 'absorbed', 'failed'):
+        raise HTTPException(400, 'invalid absorption state')
     return sources.list_sources(project_id, q=q, kind=kind, status=status or None,
                                 connection_id=connection_id or None,
                                 group=group or None,
-                                limit=max(1, min(limit, 500)), cursor=cursor)
+                                limit=max(1, min(limit, 500)), cursor=cursor,
+                                absorption_state=absorption_state or None)
+
+
+def _selection(payload: dict) -> tuple[str, list[str]]:
+    project_id, ids = payload.get('project_id'), payload.get('ids')
+    if not project_id or not isinstance(ids, list) or not ids or len(ids) > 5000 or not all(isinstance(i, str) for i in ids):
+        raise HTTPException(400, 'project_id and 1–5000 source ids are required')
+    return project_id, ids
+
+
+@router.patch('/policy')
+def source_policy(payload: dict = Body(...), _email: str = Depends(current_user)):
+    project_id, ids = _selection(payload)
+    try:
+        return {'changed': sources.set_policy(project_id, ids, payload.get('absorption_policy', ''))}
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.post('/retry')
+def retry_sources(payload: dict = Body(...), _email: str = Depends(current_user)):
+    project_id, ids = _selection(payload)
+    from ..db import connect
+    with connect() as c:
+        rows = c.execute('SELECT id,status,connection_id FROM brain_sources WHERE project_id=%s AND id=ANY(%s)',
+                         (project_id, ids)).fetchall()
+        c.execute("UPDATE brain_ingest_units SET state='pending',error=NULL WHERE project_id=%s AND unit_id=ANY(%s)",
+                  (project_id, ids))
+    runs = []
+    for cid in {r['connection_id'] for r in rows if r['status'] == 'failed' and r['connection_id']}:
+        runs.append(connections.sync(cid, full=True))
+    queued = sources.set_queued(project_id, [r['id'] for r in rows if r['status'] == 'ok'], True)
+    return {'queued': queued, 'runs': runs}
 
 
 @router.get("/failures")
@@ -133,7 +170,13 @@ def _guard(path: str, etag: str) -> None:
     if not path.startswith("sources/") or ".." in path:
         raise HTTPException(400, "path must be a sources/ file")
     if etag and not _ETAG.fullmatch(etag):
-        raise HTTPException(400, "etag must be 7-40 hex chars")
+        raise HTTPException(400, "etag must be 7-64 hex chars")
+    try:
+        local = source_history.resolve(path, etag)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    if local:
+        return local
     try:
         current = storage.head_etag(path)
     except RuntimeError as e:
@@ -153,7 +196,11 @@ def source_content(path: str, etag: str = "", _email: str = Depends(current_user
     Separate from /view, which hands back a presigned URL the browser follows
     out of the app. This one keeps the reader on the page.
     """
-    _guard(path, etag)
+    local = _guard(path, etag)
+    if local:
+        data = local.read_bytes()
+        limit = storage.MAX_INLINE_BYTES
+        return {'path': path, 'text': data[:limit].decode('utf-8', 'replace'), 'truncated': len(data)>limit}
     text, truncated = storage.read_text(path)
     return {"path": path, "text": text, "truncated": truncated}
 
@@ -162,8 +209,21 @@ def source_content(path: str, etag: str = "", _email: str = Depends(current_user
 def view_source(path: str, etag: str = "", _email: str = Depends(current_user),
                 accept: str = Header("")):
     """A short-lived presigned URL for opening the raw file outside the app."""
-    _guard(path, etag)
+    local = _guard(path, etag)
+    if local:
+        url = '/api/sources/file?' + urlencode({'path': path, 'etag': etag})
+        if isinstance(accept, str) and 'text/html' in accept:
+            return FileResponse(local, filename=path.rsplit('/', 1)[-1], content_disposition_type='inline')
+        return {'url': url}
     url = storage.presigned_url(path)
     if "text/html" in accept:
         return RedirectResponse(url, status_code=302)
     return {"url": url}
+
+
+@router.get('/file')
+def local_source(path: str, etag: str = '', _email: str = Depends(current_user)):
+    local = _guard(path, etag)
+    if local:
+        return FileResponse(local, filename=path.rsplit('/', 1)[-1], content_disposition_type='inline')
+    return RedirectResponse(storage.presigned_url(path), status_code=302)

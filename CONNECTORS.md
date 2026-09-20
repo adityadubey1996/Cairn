@@ -12,7 +12,8 @@ connectors you create the OAuth client that would normally belong to a vendor.
 Ask the running server what is still missing rather than guessing:
 
 ```bash
-curl -s localhost:8300/api/connectors/preflight | python3 -m json.tool
+# Docker default. Use 8300 when running from source.
+curl -s localhost:8301/api/connectors/preflight | python3 -m json.tool
 ```
 
 Every connector reports `ready`, the env vars still `missing`, and a one-line
@@ -30,23 +31,27 @@ Every connector reports `ready`, the env vars still `missing`, and a one-line
 | **GitHub repos** | works | nothing public · `GITHUB_TOKEN` for private |
 | **Google Drive** | works | your own Google OAuth client |
 | **Google Chat** | works | the same Google OAuth client |
-| **WhatsApp** | works | Steel browser + group titles |
-| **LinkedIn** | works | Steel browser + thread URLs |
-| Gmail | **not built** | — |
+| **Gmail** | implemented; complete email threads | Google OAuth + Gmail API + mail consent |
+| **WhatsApp** | browser integration; requires live login | Steel browser + group titles |
+| **LinkedIn** | browser integration; requires live login | Steel browser + thread URLs |
 | Outlook · OneDrive · Teams | **not built** | — |
 | Jira · Slack · Confluence | **not built** | — |
 
-The unbuilt ones appear greyed out in the Connect screen. They are listed
-because the UI catalogue is the product roadmap; there is no feeder behind them
-in `REGISTRY`, so no amount of configuration will make them run. Adding one is
-a `run()` in `feeders/<name>/sync.py` plus a single `REGISTRY` entry — see
-[Adding a connector](#adding-a-connector).
+The unbuilt integrations have no feeder in `REGISTRY`. Their presence in a
+catalogue is a roadmap entry, not a working connection.
+
+The Gmail adapter follows the complete-thread boundary studied in
+[Onyx's Gmail connector](https://github.com/onyx-dot-app/onyx/blob/main/backend/onyx/connectors/gmail/connector.py),
+implemented here against Google's REST API and Cairn's source/inbox format.
+This is a selected adaptation: Onyx's entire connector factory, credential
+system, permission sync and indexing runtime are not integrated. Adding another
+provider still needs implementation and testing in this repository.
 
 ---
 
-## Google Drive and Google Chat
+## Google Drive, Google Chat and Gmail
 
-One OAuth client and one consent covers both. Scopes are read-only throughout:
+One OAuth client and one consent cover these Google integrations. Scopes are read-only throughout:
 the token cannot write, delete, send or post.
 
 **1. Create a Google Cloud project** at
@@ -55,28 +60,34 @@ the token cannot write, delete, send or post.
 **2. Enable the APIs** you want — *APIs & Services → Library*:
 - **Google Drive API** (for Drive)
 - **Google Chat API** (for Chat)
+- **Gmail API** (for email)
 
 **3. Configure the consent screen** — *APIs & Services → OAuth consent screen*.
-Choose **External** unless you are on a Workspace domain and only you will use
-it. Add yourself under **Test users**. It can stay in "Testing" forever for
-personal use; you never need Google to verify the app.
+Choose the audience appropriate to your Google account and organization. For
+an External application in testing, add your account under **Test users**.
+Testing grants can expire, so unattended operation may require renewing consent
+or completing the Google publishing requirements for your application.
 
 **4. Create the client** — *Credentials → Create credentials → OAuth client ID*:
 - Application type: **Web application**
-- Authorised redirect URI, copied exactly:
+- Authorised redirect URI, copied exactly for the way Cairn runs:
 
 ```
-http://localhost:8300/api/google/callback
+Source: http://localhost:8300/api/google/callback
+Docker: http://localhost:8301/api/google/callback
 ```
 
-That URI is an external contract registered byte for byte. If you run Cairn on
-a different port, register that port instead and keep the path identical.
+The selected URI is an external contract registered byte for byte. Add its
+matching origin without the callback path. If you run Cairn on a different
+port, register that port instead and keep the path identical.
 
 **5. Put the client in `.env`:**
 
 ```bash
 GOOGLE_CLIENT_ID=....apps.googleusercontent.com
 GOOGLE_CLIENT_SECRET=GOCSPX-...
+# Optional: reject a consent response from a different account.
+GOOGLE_ACCOUNT_EMAIL=you@example.com
 ```
 
 **6. Restart the server, then press Connect** in the Connect screen. Google
@@ -84,17 +95,53 @@ asks for consent, the callback stores a refresh token at
 `secrets/google-oauth.json` (gitignored, never logged, never returned through
 the API), and the connector flips to configured.
 
+Existing Drive/Chat tokens do not automatically gain Gmail access. Connect again
+and grant read-only Gmail access. The saved granted scopes determine whether the
+Gmail connector is ready. All Google connections currently share one token;
+independent work/personal Google accounts are not supported simultaneously.
+
 ### Choosing what Drive pulls
 
-`GDRIVE_SOURCE_IDS` empty means *files you own*. That is deliberate: with no
-IDs, "everything shared with me" is unbounded on a Workspace domain and the
-first sync would never finish. To narrow it, paste folder or file IDs — the
+`GDRIVE_SOURCE_IDS` empty means supported text-like files you own plus visible
+meeting-transcript-shaped documents shared by others. Generic shared files,
+Sheets and Slides are not swept automatically. To narrow it, paste folder or file IDs — the
 string after `/folders/` or `/d/` in the URL:
 
 ```bash
 GDRIVE_SOURCE_IDS=1a2B3cD4eF5gH6iJ,1zY9xW8vU7tS
 GDRIVE_EXCLUDE=Archive/*,*/Personal/*
 ```
+
+Connection configuration can override `source_ids` and `max_items`. Renaming a
+Drive file keeps its existing citation path. Incremental folder walks traverse
+unchanged folders to find updated documents below them.
+
+### Choosing what Gmail pulls
+
+The default query is `newer_than:90d -in:spam -in:trash`; set `GMAIL_QUERY` or a
+connection's `query` to choose labels, senders or another time window. A matching
+thread is always fetched in full, preserving earlier messages when a reply
+arrives. The source includes senders, recipients, dates, subject, readable MIME
+text and attachment names. Attachment bytes are not downloaded or extracted.
+
+`max_items` limits a run's thread count. A capped run reports partial and leaves
+its watermark unchanged; narrow the query or raise/remove the cap to finish
+that window. Source identifiers include the project and mailbox. The current
+sync does not reconcile deleted messages or permission revocations.
+
+### Google Chat coverage
+
+Chat reads named `SPACE` conversations, their messages, rich links and supported
+attachments. Direct messages and ordinary group chats are excluded. Full
+space histories are reconciled each run so earlier messages and edits survive
+daily-file regeneration; this can take time on large accounts. Images are kept
+as originals with a descriptive entry, without image understanding.
+
+For a bounded sample, a connection's `max_items` caps complete day entries and
+attachments, and limits how many spaces are inspected. Each sampled space has
+a five-page message budget; an oversized day fails safely instead of replacing
+its transcript with partial content. Skipped work marks the run incomplete and
+leaves its watermark unchanged. Set `max_items` to `0` for a full reconciliation.
 
 ### If it stops working
 
@@ -107,8 +154,10 @@ silent empty sync is indistinguishable from "no new files". Press Connect again.
 
 ## GitHub repos
 
-Public repos need nothing. Add one from the **Repos** tab — it is not a
-"connection", it has its own clone → graph → ingest → absorb lifecycle.
+Public repos need no token. Add one from the **Repos** tab. Sync is queued as a
+durable job through clone → graph → ingest, followed by absorption when enabled
+for that repository. This connector reads repository files and history; it does
+not import GitHub issues, pull-request discussions or account notifications.
 
 A private repo needs a token, and a token is the *only* way in: git is scrubbed
 of every ambient credential (`GIT_TERMINAL_PROMPT=0`, no system config, no
@@ -167,17 +216,21 @@ it:
 BROWSER_VIEW_PASSWORD=something-only-you-know
 ```
 
-**4. Sign in once** — open the panel and scan the WhatsApp QR, or log into
-LinkedIn. Cookies persist under `secrets/` so you do not repeat it every run.
+**4. Sign in** — open the panel and scan the WhatsApp QR, or log into LinkedIn.
+LinkedIn cookies persist under `secrets/` and can expire. WhatsApp relies on the
+live browser's IndexedDB; restarting Steel requires scanning the QR again.
+Selectors and scrolling limits can affect coverage when these websites change.
 
 ---
 
 ## Links
 
-No credentials. It follows URLs already present in content other connectors
-brought in, and skips a `drive.google.com` link unless the Google connector is
-connected. `LINKS_FETCH_CAP` bounds total fetch *attempts* per run — it is a
-run-time valve, not a content filter.
+Public website URLs need no account. A connection can supply `urls`; those
+pages are fetched directly without crawling their child links. Without an
+explicit URL list, the feeder discovers URLs in other sources and follows one
+additional hop. Drive URLs use the connected Google credential.
+`LINKS_FETCH_CAP` and an optional connection `max_items` bound attempts per run.
+Login walls, access restrictions and unreachable pages can still fail extraction.
 
 Pages that plain HTTP cannot read (JS-rendered) can fall back to Steel:
 
@@ -194,20 +247,59 @@ Off by default so an install without Steel behaves exactly as before.
 
 No credentials and no account. Drag files or a folder into the Connect screen.
 This is the fastest way to see the whole pipeline work before wiring any OAuth.
+Failed extractions remain in staging for retry; the only uploaded copy is not
+discarded on failure.
+
+DOCX, XLSX and PPTX use installed Python readers, with pandoc preferred for
+DOCX when available. XLSX extraction includes every worksheet and labels formula
+expressions without recalculating them. PPTX includes slide text, tables and
+speaker notes. Text PDFs use pdftotext or pypdf. These readers do not interpret
+images, charts or drawings; scanned uploads without a text layer report an
+extraction failure. Drive PDF fetching additionally supports Tesseract OCR when
+the system tools are installed. Uploaded Office files in Drive use the same
+readers as local uploads.
+
+## Verify configuration and access
+
+The diagnostic command reads configuration without contacting providers:
+
+```bash
+.venv/bin/python scripts/connector_check.py
+```
+
+Use `--live` for an explicitly selected provider and a bounded read-only sample:
+
+```bash
+.venv/bin/python scripts/connector_check.py --connector gdrive --live --limit 1 --extract
+.venv/bin/python scripts/connector_check.py --connector links --live --url https://www.python.org/about/
+.venv/bin/python scripts/connector_check.py --connector github --live --url https://github.com/octocat/Hello-World
+```
+
+The output reports configuration, access, extraction sizes and partial/error
+state without printing tokens or source bodies. It does not save sources,
+write the database or generate wiki articles. Browser checks inspect existing
+login sessions and do not create or navigate one. A successful probe validates
+that sample; it is not evidence of a complete account synchronization.
 
 ---
 
 ## Adding a connector
 
-The health screen, run history, status derivation and preflight are all
-generic, so a new connector is two things:
+The health screen and preflight share a registry. A complete integration needs:
 
-1. `feeders/<name>/sync.py` exposing `run(project_id) -> (seen, written)`,
-   writing into the target repo's `raw/inbox/`.
+1. `feeders/<name>/sync.py` exposing `run(project_id, connection_id, on_progress)`
+   and returning `feeders.result.SyncResult`. It remains compatible with
+   `(seen, written)` unpacking and also carries `failed`, `failures` and `complete`.
+   Write canonical `sources/...` references and `raw/inbox/` entries; use
+   `pipeline.source_files.source_path()` for the configured physical source volume.
 2. One `Connector(...)` entry in `REGISTRY` in
    [server/connectors.py](server/connectors.py) — including `requires=(...)`
    and `setup="..."`, which is what makes it appear in `/preflight` with
    honest instructions.
+3. Connection-kind, pipeline-runner and UI wiring, with a configuration
+   allowlist, appropriate source scope, offline tests and a live access probe.
+   Preserve source identity, failures and retryability; incomplete scrapes must
+   not advance their watermark.
 
 If it needs OAuth, give it an `OAuthSpec` instead of writing a router: the
 generic consent routes at `/api/{provider}/authorize` and `/callback` serve

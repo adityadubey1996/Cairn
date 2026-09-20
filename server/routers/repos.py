@@ -13,7 +13,7 @@ import logging
 
 from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException
 
-from .. import config, corpus, repos, storage
+from .. import config, corpus, repos, storage, llm, projects, jobs
 from ..auth import current_user
 
 log = logging.getLogger("cairn.repos")
@@ -33,19 +33,28 @@ def _fail(e: Exception):
 
 
 @router.get("")
-def list_repos(_email: str = Depends(current_user)):
+def list_repos(project_id: str | None = None, _email: str = Depends(current_user)):
     running = repos.busy()
+    active = repos.active_jobs()
     rows = repos.list_repos()
+    if project_id:
+        rows = [r for r in rows if r['project_id'] == project_id]
+    try:
+        llm.absorb_env()
+        can_absorb = True
+    except llm.NoProvider:
+        can_absorb = False
     for r in rows:
         r["running_step"] = running.get(r["id"])
-        r["can_absorb"] = bool(config.GROQ_API_KEY)
+        r['active_run'] = active.get(r['id'])
+        r["can_absorb"] = can_absorb
         # Count on disk, not from the column. absorb writes the column once at
         # the end, so a 15-minute run showed a frozen number the whole time;
         # articles land one at a time, so the filesystem is the live counter.
         r["articles"] = repos.count_articles(r["wiki_root"])
         r["queue_new"], r["absorbed"] = repos.queue_remaining(r)
         r["last_run"] = (repos.runs(r["id"], 1) or [None])[0]
-    return {"repos": rows, "groq_configured": bool(config.GROQ_API_KEY),
+    return {"repos": rows, "groq_configured": can_absorb, 'model_configured': can_absorb,
             "max_tracked": config.REPO_MAX_TRACKED}
 
 
@@ -71,28 +80,27 @@ def check(payload: dict = Body(...), _email: str = Depends(current_user)):
 
 
 @router.post("/sweep", status_code=202)
-def sweep(bg: BackgroundTasks, _email: str = Depends(current_user)):
+def sweep(bg: BackgroundTasks, project_id: str | None = None, _email: str = Depends(current_user)):
     """Pull and re-ingest every tracked repo. Free — never absorbs.
 
     Declared before the /{owner}/{name} routes so "sweep" is not read as an
     owner. It is the same function the scheduled timer calls.
     """
-    def job():
-        try:
-            from feeders.github import sync as gh
-            gh.run()
-        except Exception:
-            log.exception("repo sweep failed")
-
-    bg.add_task(job)
-    return {"accepted": True, "step": "sweep"}
+    results = [jobs.submit('github', r['project_id'], connection_id=r['id']) for r in repos.list_repos()
+               if not project_id or r['project_id'] == project_id]
+    return {"accepted": True, "step": "sweep", 'runs': results}
 
 
 @router.post("", status_code=201)
 def add_repo(payload: dict = Body(...), _email: str = Depends(current_user)):
     try:
+        project_id = payload.get('project_id') or projects.ensure_default()
+        if not projects.get(project_id):
+            raise HTTPException(404, 'project not found')
         return repos.add(payload.get("url", ""), payload.get("branch"),
-                         payload.get("token", ""))
+                         payload.get("token", ""), project_id=project_id)
+    except HTTPException:
+        raise
     except Exception as e:
         _fail(e)
 
@@ -135,28 +143,10 @@ def _spawn(bg: BackgroundTasks, rid: str, step: str, **kwargs):
     row = repos.get(rid)
     if not row:
         raise HTTPException(404, f"no such repo: {rid}")
-    if repos.busy().get(rid):
-        raise HTTPException(409, f"{rid} is already running {repos.busy()[rid]}")
-
-    def job():
-        try:
-            repos.run_step(rid, step, **kwargs)
-            if step == "absorb":
-                corpus.sync()  # make the new articles searchable now, not in 15 min
-            if step in ("ingest", "absorb"):
-                # Both write into the durable wiki: absorb writes articles,
-                # ingest writes the manifest twin that is the drift baseline.
-                # Push on either, so nothing durable lives only on this
-                # container's disk. No-op without S3.
-                try:
-                    storage.push()
-                except Exception:
-                    log.exception("s3 push failed; the work is still on disk")
-        except Exception:
-            log.exception("%s: %s failed", rid, step)
-
-    bg.add_task(job)
-    return {"accepted": True, "repo": rid, "step": step}
+    result = jobs.submit('github', row['project_id'], connection_id=rid,
+                         absorb=step == 'absorb', repo_step=step, options=kwargs)
+    return {"accepted": True, "repo": rid, "step": step, 'runId': result['run_id'],
+            'status': result['status']}
 
 
 @router.post("/{owner}/{name}/clone", status_code=202)
@@ -186,12 +176,25 @@ def ingest(owner: str, name: str, bg: BackgroundTasks,
 @router.post("/{owner}/{name}/absorb", status_code=202)
 def absorb(owner: str, name: str, bg: BackgroundTasks,
            payload: dict = Body(default={}), _email: str = Depends(current_user)):
-    if not config.GROQ_API_KEY:
-        raise HTTPException(409, "GROQ_API_KEY is not set — absorb is the only paid step")
+    try:
+        from .. import llm
+        llm.absorb_env()
+    except Exception as e:
+        raise HTTPException(409, str(e))
     p = payload or {}
+    import re
+    if p.get('kind', '') not in repos.KINDS | {''}:
+        raise HTTPException(400, 'unknown document kind')
+    if type(p.get('limit', 5)) is not int or not 1 <= p.get('limit', 5) <= 50:
+        raise HTTPException(400, 'limit must be between 1 and 50')
+    if p.get('only') is not None and (not isinstance(p['only'], list) or
+            not all(isinstance(s, str) and re.fullmatch(r'[A-Za-z0-9._/-]{1,200}', s) for s in p['only'])):
+        raise HTTPException(400, 'only must contain valid unit IDs')
+    if p.get('since') is not None and (type(p['since']) is not int or p['since'] < 1):
+        raise HTTPException(400, 'since must be a positive commit count')
     return _spawn(bg, f"{owner}/{name}".lower(), "absorb",
                   limit=int(p.get("limit", 5)), only=p.get("only"),
-                  kind=p.get("kind", "code_package"),
+                  kind=p.get("kind", ""),
                   since=int(p["since"]) if p.get("since") else None)
 
 
@@ -201,16 +204,4 @@ def sync(owner: str, name: str, bg: BackgroundTasks,
     """clone → graph → ingest. Stops before absorb, deliberately: the free path
     should be one button, and the paid one should never be implicit."""
     rid = f"{owner}/{name}".lower()
-    if not repos.get(rid):
-        raise HTTPException(404, f"no such repo: {rid}")
-    if repos.busy().get(rid):
-        raise HTTPException(409, f"{rid} is already running {repos.busy()[rid]}")
-
-    def job():
-        try:
-            repos.run_sync(rid)
-        except Exception:
-            log.exception("%s: sync failed", rid)
-
-    bg.add_task(job)
-    return {"accepted": True, "repo": rid, "step": "sync"}
+    return _spawn(bg, rid, 'sync')

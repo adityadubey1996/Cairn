@@ -1,4 +1,4 @@
-"""OAuth for the Google feeders — one consent, shared by Drive and Chat.
+"""OAuth for the Google feeders — one consent, shared by Drive, Chat and Gmail.
 
 The same Web client backs sign-in (`config.GOOGLE_CLIENT_ID`); sign-in only
 verifies an ID token, while ingestion runs the authorization-code exchange and
@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -33,6 +34,7 @@ SCOPES = (
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/chat.spaces.readonly",
     "https://www.googleapis.com/auth/chat.messages.readonly",
+    "https://www.googleapis.com/auth/gmail.readonly",
 )
 
 
@@ -44,6 +46,15 @@ class ReauthRequired(RuntimeError):
 
 def connected() -> bool:
     return config.GOOGLE_TOKEN_FILE.is_file()
+
+
+def has_scopes(required: tuple[str, ...]) -> bool:
+    """Old Google connections stay useful while new scopes await re-consent."""
+    try:
+        saved = json.loads(config.GOOGLE_TOKEN_FILE.read_text())
+        return bool(saved.get("refresh_token")) and set(required).issubset(saved.get("scopes", []))
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 def account() -> str:
@@ -102,21 +113,37 @@ def exchange_code(code: str, redirect_uri: str) -> str:
     if "refresh_token" not in tok:
         raise ReauthRequired("no refresh_token returned — prompt=consent missing?")
     email = _whoami(tok["access_token"])
-    save_token(tok["refresh_token"], email)
+    expected = os.environ.get("GOOGLE_ACCOUNT_EMAIL", "").strip().lower()
+    if expected and email.lower() != expected:
+        raise ReauthRequired(f"Connect with {expected}; the selected account was different")
+    granted = tok.get("scope", "").split() or list(SCOPES)
+    save_token(tok["refresh_token"], email, scopes=granted)
     _cache_access(tok["access_token"], tok.get("expires_in", 3600))
     return email
 
 
-def save_token(refresh_token: str, email: str) -> None:
+def save_token(refresh_token: str, email: str, scopes: list[str] | None = None) -> None:
     path = config.GOOGLE_TOKEN_FILE
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({
+    data = json.dumps({
         "refresh_token": refresh_token,
         "account": email,
-        "scopes": list(SCOPES),
+        "scopes": list(SCOPES) if scopes is None else scopes,
         "obtained_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }, indent=2))
-    os.chmod(path, 0o600)
+    }, indent=2)
+    # tempfile creates mode 600; replace only after a complete write, so a
+    # crashed/restarted callback cannot destroy the previously working token.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", dir=path.parent, delete=False) as token_file:
+            temporary = token_file.name
+            token_file.write(data)
+            token_file.flush()
+            os.fsync(token_file.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
 
 
 def disconnect() -> None:

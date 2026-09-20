@@ -39,7 +39,10 @@ from pathlib import Path
 
 from feeders.gdrive import sync as _gdrive
 from feeders.google.auth import access_token
+from feeders.result import SyncResult, failure
+from feeders import options
 from pipeline.ingest import BINARY_EXT, DATA_EXT, PROSE_EXT, extract_binary, summarize_dataset
+from pipeline.source_files import source_path as resolve_source_path
 from server import config, sources as sources_index
 
 API = "https://chat.googleapis.com/v1"
@@ -115,6 +118,32 @@ def list_messages(space_name: str, created_after: str = "") -> list[dict]:
         params["filter"] = f'createTime > "{created_after}"'
     msgs = _pages(f"{API}/{space_name}/messages", params, "messages")
     return sorted(msgs, key=lambda m: m["createTime"])
+
+
+def list_message_sample(space_name: str, max_days: int) -> tuple[list[dict], bool]:
+    """Fetch complete recent days, or fail without writing a partial day.
+
+    A sample has a five-page budget per space. Descending order lets the first
+    message from an older day prove that the selected newer day is complete.
+    API ordering: developers.google.com/workspace/chat/api/reference/rest/v1/spaces.messages/list
+    """
+    out, days, token = [], set(), None
+    for _ in range(5):
+        params = {"pageSize": 100, "orderBy": "createTime DESC"}
+        if token:
+            params["pageToken"] = token
+        page = _get_json(f"{API}/{space_name}/messages?{urllib.parse.urlencode(params)}")
+        for message in page.get("messages", []):
+            day = message["createTime"].split("T")[0]
+            if day not in days and len(days) >= max_days:
+                return sorted(out, key=lambda m: m["createTime"]), True
+            if carries_content(message):
+                days.add(day)
+                out.append(message)
+        token = page.get("nextPageToken")
+        if not token:
+            return sorted(out, key=lambda m: m["createTime"]), False
+    raise ValueError("Chat sample exceeded five message pages before a complete day; use an uncapped sync to retrieve it")
 
 
 def _sender(m: dict) -> str:
@@ -205,8 +234,7 @@ def already_stored(target_repo: Path, space_id: str, att: dict) -> bool:
     uid = attachment_id(space_id, content_name, _attachment_ref(att))
     slug = attachment_slug(content_name, uid)
     ext = Path(content_name).suffix.lower()
-    original = (target_repo / "sources" / "gchat" / ATTACHMENTS_SUBDIR
-                / ORIGINALS_SUBDIR / f"{slug}{ext}")
+    original = resolve_source_path(target_repo, f"sources/gchat/{ATTACHMENTS_SUBDIR}/{ORIGINALS_SUBDIR}/{slug}{ext}")
     inbox = target_repo / "raw" / "inbox" / f"{uid}.md"
     return original.is_file() and inbox.is_file()
 
@@ -293,20 +321,23 @@ def write_attachment(target_repo: Path, att: dict, raw: bytes, *, space_id: str,
     slug = attachment_slug(content_name, uid)
     ext = Path(content_name).suffix.lower()
 
-    sources_dir = target_repo / "sources" / "gchat" / ATTACHMENTS_SUBDIR
+    sources_dir = resolve_source_path(target_repo, f"sources/gchat/{ATTACHMENTS_SUBDIR}")
     originals_dir = sources_dir / ORIGINALS_SUBDIR
     inbox_dir = target_repo / "raw" / "inbox"
     for d in (sources_dir, originals_dir, inbox_dir):
         d.mkdir(parents=True, exist_ok=True)
 
-    sha = hashlib.sha1(raw).hexdigest()[:8]
     original_rel = f"sources/gchat/{ATTACHMENTS_SUBDIR}/{ORIGINALS_SUBDIR}/{slug}{ext}"
-    original_path = target_repo / original_rel
+    original_path = resolve_source_path(target_repo, original_rel)
     inbox_path = inbox_dir / f"{uid}.md"
 
     with tempfile.TemporaryDirectory() as d:
         source_type, payload = _extract(content_name, raw, Path(d))
 
+    # A citation hashes the file its path resolves to. For a PDF that file is
+    # extracted Markdown, while the original PDF is kept separately.
+    stored = payload if isinstance(payload, bytes) else payload.encode()
+    sha = hashlib.sha1(stored).hexdigest()[:8]
     stored_ext = ext.lstrip(".") if isinstance(payload, bytes) else "md"
     source_path = sources_dir / f"{slug}.{stored_ext}"
     # Same self-heal condition the upload feeder uses: an unchanged attachment
@@ -314,17 +345,14 @@ def write_attachment(target_repo: Path, att: dict, raw: bytes, *, space_id: str,
     # which is what lets rows written before originals/ existed repair
     # themselves on the next sync.
     if (source_path.is_file() and inbox_path.is_file() and original_path.is_file()
-            and hashlib.sha1(source_path.read_bytes()).hexdigest()[:8] ==
-                (sha if isinstance(payload, bytes)
-                 else hashlib.sha1(payload.encode()).hexdigest()[:8])):
+            and hashlib.sha1(source_path.read_bytes()).hexdigest()[:8] == sha):
         sources_index.attribute(uid, connection_id)
         return False
 
     original_path.write_bytes(raw)
     if isinstance(payload, bytes):
         source_path.write_bytes(payload)
-        body = summarize_dataset(
-            target_repo, [source_path.relative_to(target_repo).as_posix()])
+        body = summarize_dataset(source_path.parent, [source_path.name])
     else:
         source_path.write_text(payload, encoding="utf-8")
         body = payload
@@ -345,12 +373,15 @@ def write_attachment(target_repo: Path, att: dict, raw: bytes, *, space_id: str,
 
 
 def run(created_after: str = "", project_id: str | None = None,
-        on_progress=None, connection_id: str | None = None) -> tuple[int, int]:
+        on_progress=None, connection_id: str | None = None,
+        max_items: int = 0) -> SyncResult:
     """Returns (items_seen, items_written); one item = one space-day.
     Called by connectors.run_now(). Full history each run — the Chat API is
     free and the sha compare keeps unchanged days from being rewritten; the
-    createTime filter kicks in when a caller passes a watermark, same
-    signature shape as the Drive feeder.
+    created_after remains accepted for caller compatibility, but daily source
+    files require complete days. Reconcile complete histories until messages
+    have their own durable store: filtering a response by createTime and then
+    replacing the daily file loses earlier messages and misses old edits.
 
     on_progress(done, total, label) counts SPACES, not days or attachments:
     neither count is known until every space has been walked, so spaces are the
@@ -361,24 +392,39 @@ def run(created_after: str = "", project_id: str | None = None,
     connection_id attributes every row to the connection whose sync
     produced it. Optional because a hand or cron run has no connection —
     those rows stay unattributed rather than being guessed at.
+
+    max_items caps source entries (complete days and attachments), and the
+    number of spaces whose messages are fetched. A cap never truncates a day;
+    omitted days, spaces or attachments make the result incomplete.
     """
+    max_items = options.max_items(max_items)
     if project_id is None:
         from server import projects
         project_id = projects.ensure_default()
-    sources = config.SOURCES_DIR / "gchat"
+    sources = resolve_source_path(config.GDRIVE_TARGET_REPO, "sources/gchat")
     # Same knowledge home as Drive: ai-brain's own tree by default.
     inbox = config.GDRIVE_TARGET_REPO / "raw" / "inbox"
     sources.mkdir(parents=True, exist_ok=True)
     inbox.mkdir(parents=True, exist_ok=True)
 
     seen = written = 0
+    failures = []
+    truncated = False
     spaces = list_spaces()
     for n, space in enumerate(spaces, 1):
+        if max_items and (seen >= max_items or n > max_items):
+            truncated = True
+            break
         if on_progress:
             on_progress(n, len(spaces), space.get("displayName") or space["name"])
         try:
             by_day: dict[str, list[dict]] = defaultdict(list)
-            for m in list_messages(space["name"], created_after):
+            if max_items:
+                messages, more = list_message_sample(space["name"], max_items - seen)
+                truncated = truncated or more
+            else:
+                messages = list_messages(space["name"])
+            for m in messages:
                 if carries_content(m):
                     by_day[m["createTime"].split("T")[0]].append(m)
         except Exception as e:
@@ -392,6 +438,8 @@ def run(created_after: str = "", project_id: str | None = None,
                 project_id=project_id, kind="gchat",
                 name=space.get("displayName") or space["name"], reason=e,
                 connection_id=connection_id)
+            failures.append(failure(f"gchat-{space['name'].split('/')[-1]}",
+                                    space.get("displayName") or space["name"], e))
             continue
         space_id = space["name"].split("/")[-1]
         for day, msgs in sorted(by_day.items()):
@@ -403,16 +451,16 @@ def run(created_after: str = "", project_id: str | None = None,
             source_path = sources / f"{slug}.md"
             existing_sha = (hashlib.sha1(source_path.read_text().encode()).hexdigest()[:8]
                             if source_path.is_file() else None)
-            if existing_sha == sha:
-                sources_index.attribute(f"gchat-{space_id}-{day}", connection_id)
-                continue
-
-            source_path.write_text(text, encoding="utf-8")
+            inbox_path = inbox / f"gchat-{space_id}-{day}.md"
+            changed = existing_sha != sha or not inbox_path.is_file()
+            if existing_sha != sha:
+                source_path.write_text(text, encoding="utf-8")
+            source_rel = f"sources/gchat/{slug}.md"
             authors = list(dict.fromkeys(_sender(m) for m in msgs))
             entry = (
                 "---\n"
                 f"id: gchat-{space_id}-{day}\n"
-                f"path: sources/gchat/{slug}.md\n"  # repo-relative: the citation
+                f"path: {source_rel}\n"
                 f"sha: {sha}\n"
                 "source_type: chat_thread\n"
                 "status: active\n"
@@ -422,14 +470,15 @@ def run(created_after: str = "", project_id: str | None = None,
                 "---\n\n"
                 + text + "\n"
             )
-            (inbox / f"gchat-{space_id}-{day}.md").write_text(entry, encoding="utf-8")
+            if changed:
+                inbox_path.write_text(entry, encoding="utf-8")
             sources_index.record(
                 id=f"gchat-{space_id}-{day}", project_id=project_id, kind="gchat",
                 name=f"{space.get('displayName') or space_id} — {day}",
-                path=f"sources/gchat/{slug}.md",
+                path=source_rel,
                 size=len(text.encode()), sha=sha, authors=authors,
                 connection_id=connection_id)
-            written += 1
+            written += int(changed)
 
         # Attachments after the transcript, so a download failure never costs
         # the day's text. Each is isolated: one unreadable file must not take
@@ -438,6 +487,9 @@ def run(created_after: str = "", project_id: str | None = None,
         for day, msgs in sorted(by_day.items()):
             for m in msgs:
                 for att in m.get("attachment") or []:
+                    if max_items and seen >= max_items:
+                        truncated = True
+                        break
                     name = att.get("contentName") or "attachment"
                     seen += 1
                     if already_stored(config.GDRIVE_TARGET_REPO, space_id, att):
@@ -469,4 +521,9 @@ def run(created_after: str = "", project_id: str | None = None,
                             id=attachment_id(space_id, name, _attachment_ref(att)),
                             project_id=project_id, kind="gchat", name=name,
                             reason=e, connection_id=connection_id)
-    return seen, written
+                        failures.append(failure(
+                            attachment_id(space_id, name, _attachment_ref(att)), name, e))
+    if truncated:
+        failures.append(failure("gchat-backlog", "Google Chat sample",
+                                f"max_items={max_items} left days, spaces or attachments unsynced; watermark unchanged"))
+    return SyncResult(seen, written, failures)

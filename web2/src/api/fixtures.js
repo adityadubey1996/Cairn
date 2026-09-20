@@ -13,7 +13,8 @@ const PROJECTS = [
 
 const CONNECTIONS = [
   { id: 'c1', projectId: 'p1', kind: 'github', name: 'acme/ai-brain', detail: 'GitHub · main',
-    status: 'ok', lastSyncAt: minutes(12), itemCount: 341, auth: 'token' },
+    status: 'ok', lastSyncAt: minutes(12), itemCount: 341, pendingCount: 329,
+    absorbedCount: 12, articleCount: 3, auth: 'token' },
   { id: 'c2', projectId: 'p1', kind: 'gdrive', name: 'Google Drive', detail: 'you@acme.com',
     status: 'running', lastSyncAt: minutes(1), itemCount: 218, auth: 'oauth' },
   { id: 'c3', projectId: 'p1', kind: 'gchat', name: 'Google Chat', detail: 'you@acme.com',

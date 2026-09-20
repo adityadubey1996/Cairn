@@ -13,7 +13,9 @@ import time
 from pathlib import Path
 
 from pipeline.ingest import BINARY_EXT, DATA_EXT, PROSE_EXT, extract_binary, summarize_dataset
+from pipeline.source_files import source_path as resolve_source_path
 from server import config, sources as sources_index
+from feeders.result import SyncResult, failure
 
 SOURCES_SUBDIR = "upload"
 
@@ -116,7 +118,7 @@ def write_entry(target_repo: Path, relative_path: str, source_type: str,
     slug = upload_slug(project_id, relative_path)
     folder = str(rel.parent) if rel.parent != Path(".") else None
 
-    sources_dir = target_repo / "sources" / SOURCES_SUBDIR
+    sources_dir = resolve_source_path(target_repo, f"sources/{SOURCES_SUBDIR}")
     inbox_dir = target_repo / "raw" / "inbox"
     sources_dir.mkdir(parents=True, exist_ok=True)
     inbox_dir.mkdir(parents=True, exist_ok=True)
@@ -128,7 +130,7 @@ def write_entry(target_repo: Path, relative_path: str, source_type: str,
     # stored file uses, so keeping it needs no new durable tree.
     original_rel = (f"sources/{SOURCES_SUBDIR}/{ORIGINALS_SUBDIR}/{slug}{rel.suffix}"
                    if original is not None else None)
-    original_path = target_repo / original_rel if original_rel else None
+    original_path = resolve_source_path(target_repo, original_rel) if original_rel else None
     existing = (hashlib.sha1(source_path.read_bytes()).hexdigest()[:8]
                if source_path.is_file() else None)
     # existing == sha alone is not enough: if an earlier run wrote the source
@@ -139,8 +141,17 @@ def write_entry(target_repo: Path, relative_path: str, source_type: str,
     # originals/ existed at all.
     if existing == sha and inbox_path.is_file() and not (
             original_path is not None and not original_path.is_file()):
-        sources_index.attribute(uid, connection_id)
-        sources_index.set_folder(uid, folder)
+        # Layout/images can change while extracted text stays identical.
+        # Keep the download current without re-enqueuing the same evidence.
+        if original_path is not None:
+            original_bytes = original.read_bytes()
+            if original_path.read_bytes() != original_bytes:
+                original_path.write_bytes(original_bytes)
+        sources_index.record(id=uid, project_id=project_id, kind=SOURCES_SUBDIR,
+                             name=rel.name, path=f"sources/{SOURCES_SUBDIR}/{slug}.{ext}",
+                             folder=folder, original_path=original_rel,
+                             size=len(stored), sha=sha, authors=[],
+                             connection_id=connection_id)
         return False
 
     if original_path is not None:
@@ -152,7 +163,7 @@ def write_entry(target_repo: Path, relative_path: str, source_type: str,
     else:
         source_path.write_text(payload, encoding="utf-8")
 
-    body = (summarize_dataset(target_repo, [source_path.relative_to(target_repo).as_posix()])
+    body = (summarize_dataset(source_path.parent, [source_path.name])
            if raw_bytes is not None else payload)
     now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     date, tm = now.split("T", 1)
@@ -176,10 +187,9 @@ def run(project_id: str | None = None, on_progress=None,
 
     Unlike every other feeder, nothing here is fetched: every file under this
     connection's staging area was already placed there by the upload
-    endpoint (server/connections.py:stage_upload). A file is removed from
-    staging once processed, success or failure alike — there is no external
-    source to re-fetch from on a retry, so a failed extraction's only
-    recourse is a fresh upload, not a re-run.
+    endpoint (server/connections.py:stage_upload). Successful files leave
+    staging; failed files stay there so a transient extraction failure can be
+    retried without destroying the only available original.
     """
     if project_id is None:
         from server import projects
@@ -192,6 +202,7 @@ def run(project_id: str | None = None, on_progress=None,
     files = sorted(p for p in root.rglob("*") if p.is_file()) if root.is_dir() else []
 
     written = 0
+    failures = []
     for n, path in enumerate(files, 1):
         rel = str(path.relative_to(root))
         if on_progress:
@@ -210,6 +221,7 @@ def run(project_id: str | None = None, on_progress=None,
             sources_index.record_failure(
                 id=upload_id(project_id, rel), project_id=project_id, kind=SOURCES_SUBDIR,
                 name=rel, path=rel, reason=e, connection_id=connection_id)
-        finally:
+            failures.append(failure(upload_id(project_id, rel), rel, e))
+        else:
             path.unlink(missing_ok=True)
-    return len(files), written
+    return SyncResult(len(files), written, failures)

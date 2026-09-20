@@ -46,7 +46,7 @@
   --secondary: #101115;
   --secondary-foreground: #c4c8d1;
   --muted: #101115;
-  --muted-foreground: #676d79; /* Pencil */
+  --muted-foreground: oklch(0.66 0.018 264); /* Readable secondary text */
   --accent: #1a1c22;       /* Graphite — shadcn's hover surface, not the brand accent */
   --accent-foreground: #c4c8d1;
   --destructive: #e07a7a;  /* Conflict Red */
@@ -71,6 +71,12 @@
     -webkit-font-smoothing: antialiased;
   }
 
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+  .chat-answer { max-width: 72ch; font-size: 15px; line-height: 1.8; overflow-wrap: anywhere; }
+  .chat-answer p { margin-block: 0.8em; }
+  .chat-answer li { margin-block: 0.3em; }
+  .chat-answer pre { font-size: 12px; line-height: 1.65; }
+
   /* Assistant answers and article bodies. Batch 2 and 4 render into this. */
   .md-content {
     @apply prose prose-invert prose-sm max-w-none
@@ -91,5 +97,8 @@
     animation: blink 0.9s step-start infinite;
   }
   @keyframes blink { 50% { opacity: 0; } }
-  @media (prefers-reduced-motion: reduce) { .caret { animation: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .caret, .animate-pulse { animation: none; }
+    *, *::before, *::after { scroll-behavior: auto !important; transition-duration: 0.01ms !important; }
+  }
 }

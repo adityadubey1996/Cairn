@@ -1,12 +1,14 @@
 // The only module that screens import for data. No fetch in a component, ever.
 //
-// VITE_API=live switches every call to the real backend; the default resolves
-// from fixtures. The names below are the contract both sides implement —
-// Batch 6 fills in live.js and changes no screen.
+// Every call goes to the real backend. VITE_API=fixtures swaps in sample data
+// for UI work with no server running. Live is the default on purpose: the
+// switch used to live in web2/.env, which the root .gitignore's `.env` rule
+// kept out of git, so every fresh clone and image shipped the demo data. The
+// names below are the contract both sides implement.
 import * as fixtures from './fixtures.js'
 import * as live from './live.js'
 
-const impl = import.meta.env.VITE_API === 'live' ? live : fixtures
+const impl = import.meta.env.VITE_API === 'fixtures' ? fixtures : live
 
 export const isLive = impl === live
 
@@ -25,6 +27,11 @@ export const fetchLinks = impl.fetchLinks
 export const pipelineRuns = impl.pipelineRuns
 export const sourceFailures = impl.sourceFailures
 export const removeConnection = impl.removeConnection
+export const connectionPolicy = impl.connectionPolicy
+export const saveConnectionPolicy = impl.saveConnectionPolicy
+export const pipelineStatus = impl.pipelineStatus
+export const retrySources = impl.retrySources
+export const setSourcePolicy = impl.setSourcePolicy
 
 export const listSources = impl.listSources
 export const listSourceGroups = impl.listSourceGroups
@@ -68,6 +75,7 @@ export const startPipelineRun = impl.startPipelineRun
 export const pipelineRun = impl.pipelineRun
 export const pipelineRunLog = impl.pipelineRunLog
 export const stopPipelineRun = impl.stopPipelineRun
+export const retryPipelineRun = impl.retryPipelineRun
 
 export const listRepos = impl.listRepos
 export const checkRepo = impl.checkRepo

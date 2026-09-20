@@ -44,13 +44,7 @@ const qs = (params) => {
   return s ? `?${s}` : ''
 }
 
-// A handful of contract functions (wikiArticle, sourceArticles, personEvents)
-// take no projectId — the screens that call them were built against fixtures,
-// which have no isolation to violate. Every function that DOES receive a
-// projectId remembers it here, so those few fall back to "whichever project
-// was last active" instead of needing screen edits to thread one through.
-let activeProject = null
-const remember = (id) => { if (id) activeProject = id; return id }
+// Project-scoped calls carry their project explicitly, including delayed callbacks.
 
 // ---------------------------------------------------------------- projects
 
@@ -71,12 +65,12 @@ export async function deleteProject(id) {
 // -------------------------------------------------------------- connections
 
 export async function listConnections(projectId) {
-  return api(`/api/connections${qs({ project_id: remember(projectId) })}`)
+  return api(`/api/connections${qs({ project_id: projectId })}`)
 }
 export async function createConnection(projectId, kind, name, config) {
   return api('/api/connections', {
     method: 'POST',
-    body: JSON.stringify({ projectId: remember(projectId), kind, name, config }),
+    body: JSON.stringify({ projectId: projectId, kind, name, config }),
   })
 }
 export async function stageUpload(connectionId, files, onProgress) {
@@ -114,14 +108,14 @@ export async function stageUpload(connectionId, files, onProgress) {
   })
 }
 export async function ingestUnits({ projectId, state = null } = {}) {
-  return api(`/api/pipeline/units${qs({ project_id: remember(projectId), state })}`)
+  return api(`/api/pipeline/units${qs({ project_id: projectId, state })}`)
 }
 export async function fetchLinks(projectId) {
-  return api(`/api/pipeline/links/fetch${qs({ project_id: remember(projectId) })}`,
+  return api(`/api/pipeline/links/fetch${qs({ project_id: projectId })}`,
              { method: 'POST' })
 }
 export async function retryUnits(projectId) {
-  return api(`/api/pipeline/units/retry${qs({ project_id: remember(projectId) })}`,
+  return api(`/api/pipeline/units/retry${qs({ project_id: projectId })}`,
              { method: 'POST' })
 }
 
@@ -136,6 +130,33 @@ export async function removeConnection(id) {
   return { id }
 }
 
+export async function connectionPolicy(id) {
+  return api(`/api/connections/${encodeURIComponent(id)}/policy`)
+}
+
+export async function saveConnectionPolicy(id, policy) {
+  return api(`/api/connections/${encodeURIComponent(id)}/policy`, {
+    method: 'PATCH', body: JSON.stringify(policy),
+  })
+}
+
+export async function pipelineStatus(projectId) {
+  return api(`/api/pipeline/status${qs({ project_id: projectId })}`)
+}
+
+export async function retrySources({ projectId, ids }) {
+  return api('/api/sources/retry', {
+    method: 'POST', body: JSON.stringify({ project_id: projectId, ids }),
+  })
+}
+
+export async function setSourcePolicy({ projectId, ids, absorptionPolicy }) {
+  return api('/api/sources/policy', {
+    method: 'PATCH',
+    body: JSON.stringify({ project_id: projectId, ids, absorption_policy: absorptionPolicy }),
+  })
+}
+
 // ------------------------------------------------------------------ sources
 
 function toSource(r) {
@@ -146,6 +167,9 @@ function toSource(r) {
     bytes: r.bytes, sha: r.sha, authors: r.authors,
     scrapedAt: r.scraped_at ?? r.scrapedAt, text: r.text,
     status: r.status ?? 'ok', error: r.error ?? null,
+    absorptionState: r.absorption_state ?? (r.wiki_queued_at ? 'queued' : 'extracted'),
+    absorptionError: r.absorption_error ?? null,
+    absorptionPolicy: r.absorption_policy ?? 'inherit',
     // Null for everything whose stored file IS the original — only an
     // extracted PDF/docx has a second, byte-identical copy to offer.
     originalPath: r.original_path ?? r.originalPath ?? null,
@@ -154,14 +178,14 @@ function toSource(r) {
 }
 
 export async function listSources({ projectId, q = '', kind = null, status = null,
-                                    connectionId = null, group = null, cursor = '' } = {}) {
+                                    connectionId = null, group = null, cursor = '', absorptionState = null } = {}) {
   // `cursor` comes straight back from the previous page; `total` is the real
   // match count, not the page size, so a caller can say "8 of 3,871".
   // `status` is 'ok' | 'failed'; omitted means both. `group` narrows to one
   // Chat space or Drive folder and only means anything alongside its `kind`.
   const res = await api(
-    `/api/sources${qs({ project_id: remember(projectId), q, kind, status,
-                       connection_id: connectionId, group, cursor })}`)
+    `/api/sources${qs({ project_id: projectId, q, kind, status,
+                       connection_id: connectionId, group, cursor, absorption_state: absorptionState })}`)
   return { rows: res.rows.map(toSource), total: res.total, cursor: res.cursor ?? null }
 }
 export async function listSubfolders({ projectId, kind, folder = '', q = '',
@@ -169,7 +193,7 @@ export async function listSubfolders({ projectId, kind, folder = '', q = '',
   // One tree level. `count` is everything beneath a child, so a folder row can
   // say what opening it is worth.
   const rows = await api(
-    `/api/sources/folders${qs({ project_id: remember(projectId), kind, folder,
+    `/api/sources/folders${qs({ project_id: projectId, kind, folder,
                                q, status, connection_id: connectionId })}`)
   // `label` is what a group row renders, whichever level it came from.
   return rows.map((f) => ({ ...f, label: f.name }))
@@ -180,7 +204,7 @@ export async function listSourceGroups({ projectId, kind = null, q = '', status 
   // Counted server-side: the row list is paginated, so grouping a page would
   // undercount every group bigger than it.
   const rows = await api(
-    `/api/sources/groups${qs({ project_id: remember(projectId), kind, q, status,
+    `/api/sources/groups${qs({ project_id: projectId, kind, q, status,
                               connection_id: connectionId })}`)
   return rows.map((g) => ({ key: g.key, label: g.key, count: g.count, last: g.last }))
 }
@@ -195,8 +219,8 @@ export async function viewSource({ path, etag = '' } = {}) {
   return api(`/api/sources/view${qs({ path, etag })}`)
 }
 
-export async function sourceArticles(sourceId) {
-  return api(`/api/sources/${encodeURIComponent(sourceId)}/articles${qs({ project_id: activeProject })}`)
+export async function sourceArticles(sourceId, projectId) {
+  return api(`/api/sources/${encodeURIComponent(sourceId)}/articles${qs({ project_id: projectId })}`)
 }
 
 export async function sourcesByUrl({ projectId, urls } = {}) {
@@ -204,7 +228,7 @@ export async function sourcesByUrl({ projectId, urls } = {}) {
   // for the ones we hold, including failed ones.
   const rows = await api('/api/sources/by-url', {
     method: 'POST',
-    body: JSON.stringify({ project_id: remember(projectId), urls }),
+    body: JSON.stringify({ project_id: projectId, urls }),
   })
   return Object.fromEntries(Object.entries(rows).map(([u, r]) => [u, toSource(r)]))
 }
@@ -216,38 +240,38 @@ export async function queueSources({ projectId, ids, queued = true } = {}) {
   // until startWikiWriteUp().
   return api('/api/sources/queue', {
     method: 'POST',
-    body: JSON.stringify({ project_id: remember(projectId), ids, queued }),
+    body: JSON.stringify({ project_id: projectId, ids, queued }),
   })
 }
 
 export async function wikiQueue(projectId) {
   // `runId` is non-null when a write-up is already in flight, so a reload
   // rejoins it instead of showing a Write up button that would 409.
-  return api(`/api/pipeline/wiki-queue${qs({ project_id: remember(projectId) })}`)
+  return api(`/api/pipeline/wiki-queue${qs({ project_id: projectId })}`)
 }
 
 export async function startWikiWriteUp(projectId) {
   return api('/api/pipeline/wiki-queue/run', {
     method: 'POST',
-    body: JSON.stringify({ project_id: remember(projectId) }),
+    body: JSON.stringify({ project_id: projectId }),
   })
 }
 
 // ----------------------------------------------------------------- timeline
 
 export async function listTimeline({ projectId } = {}) {
-  return api(`/api/timeline${qs({ project_id: remember(projectId) })}`)
+  return api(`/api/timeline${qs({ project_id: projectId })}`)
 }
 
 // ------------------------------------------------------------------- people
 
 export async function listPeople({ projectId, q = '' } = {}) {
-  const rows = await api(`/api/people${qs({ project_id: remember(projectId) })}`)
+  const rows = await api(`/api/people${qs({ project_id: projectId })}`)
   const needle = q.trim().toLowerCase()
   return needle ? rows.filter((p) => p.name.toLowerCase().includes(needle)) : rows
 }
-export async function personEvents(personId) {
-  return api(`/api/people/${encodeURIComponent(personId)}/events${qs({ project_id: activeProject })}`)
+export async function personEvents(personId, projectId) {
+  return api(`/api/people/${encodeURIComponent(personId)}/events${qs({ project_id: projectId })}`)
 }
 
 // -------------------------------------------------------------- citations
@@ -273,6 +297,7 @@ function chatCitations(raw) {
     label: `${c.path.split('/').pop()}@${c.sha.slice(0, 7)}`,
     type: c.path.startsWith('sources/links/') ? 'link' : 'file',
     url: c.href || '#',
+    path: c.path, etag: c.sha,
   }))
 }
 const formatHeads = (heads) =>
@@ -281,7 +306,8 @@ const formatHeads = (heads) =>
 // ------------------------------------------------------------- conversations
 
 export async function listConversations({ projectId } = {}) {
-  return api(`/api/conversations${qs({ project_id: remember(projectId) })}`)
+  const rows = await api(`/api/conversations${qs({ project_id: projectId })}`)
+  return rows.map((row) => ({ ...row, createdAt: row.createdAt ?? row.created_at }))
 }
 export async function conversationMessages(cid) {
   return api(`/api/conversations/${cid}/messages`)
@@ -303,21 +329,26 @@ export async function deleteConversation(id) {
   return { id }
 }
 
-export async function sendMessage(cid, text, { onStage, onToken, signal } = {}) {
+export async function sendMessage(cid, text, { onStage, onToken, onConversation, projectId, signal } = {}) {
   let realCid = cid
   if (!UUID_RE.test(cid)) {
     const conv = await api('/api/conversations', {
-      method: 'POST', body: JSON.stringify({ projectId: activeProject }),
+      method: 'POST', signal, body: JSON.stringify({ projectId: projectId }),
     })
     realCid = conv.id
   }
+  onConversation?.(realCid)
 
   const res = await fetch(`/api/conversations/${realCid}/messages`, {
     method: 'POST', signal,
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ content: text }),
   })
-  if (!res.ok || !res.body) throw new Error(`sendMessage: ${res.status}`)
+  if (!res.ok || !res.body) {
+    let detail
+    try { detail = (await res.json()).detail } catch { /* response may not be JSON */ }
+    throw new Error(typeof detail === 'string' ? detail : `The answer could not start (${res.status}). Check the model in Settings.`)
+  }
 
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
@@ -334,7 +365,7 @@ export async function sendMessage(cid, text, { onStage, onToken, signal } = {}) 
       const line = frame.split('\n').find((l) => l.startsWith('data: '))
       if (!line) continue
       const msg = JSON.parse(line.slice(6))
-      if (msg.error) throw new Error(msg.error)
+      if (msg.error) { await reader.cancel(); throw new Error(msg.error) }
       if (msg.delta !== undefined) {
         out += msg.delta
         onToken?.(linkifyChat(out))
@@ -351,6 +382,8 @@ export async function sendMessage(cid, text, { onStage, onToken, signal } = {}) 
       }
     }
   }
+
+  if (!final) throw new Error('The model connection ended before the answer completed. Check the model in Settings and try again.')
 
   const trust = final?.trust ? {
     grades: final.trust.grades || {}, articleCount: final.trust.articles?.length ?? 0,
@@ -373,33 +406,33 @@ export async function search({ projectId, q = '', kind = null } = {}) {
   if (!q.trim()) return { rows: [], query: q }
   // `kind` is what makes this "search inside my files" rather than "search
   // everything" — same scan, one connector.
-  const { rows } = await api(`/api/search/find${qs({ project_id: remember(projectId), q, kind })}`)
+  const { rows } = await api(`/api/search/find${qs({ project_id: projectId, q, kind })}`)
   return { rows, query: q }
 }
 
 // --------------------------------------------------------------------- wiki
 
 export async function wikiGraph({ projectId } = {}) {
-  const g = await api(`/api/wiki/graph${qs({ project_id: remember(projectId) })}`)
+  const g = await api(`/api/wiki/graph${qs({ project_id: projectId })}`)
   // Reader.jsx round-trips a single `path` string; the composite `repo/rel`
   // id is what stays unique across roots, so path IS id here (see
   // server/routers/wiki.py's article() docstring).
   return { nodes: g.nodes.map((n) => ({ ...n, path: n.id })), edges: g.edges }
 }
-export async function wikiArticle({ path }) {
+export async function wikiArticle({ path, projectId }) {
   const slash = path.indexOf('/')
   const repo = path.slice(0, slash)
   const rel = path.slice(slash + 1)
-  const a = await api(`/api/wiki/article${qs({ repo, path: rel, project_id: activeProject })}`)
+  const a = await api(`/api/wiki/article${qs({ repo, path: rel, project_id: projectId })}`)
   return { ...a, sources: (a.sources || []).map(toSource) }
 }
-export async function deleteArticle({ path }) {
+export async function deleteArticle({ path, projectId }) {
   // Same repo/rel split as wikiArticle — the first segment is the wiki root's
   // name, not part of the article path.
   const slash = path.indexOf('/')
   return api(`/api/wiki/article${qs({ repo: path.slice(0, slash),
                                      path: path.slice(slash + 1),
-                                     project_id: activeProject })}`,
+                                     project_id: projectId })}`,
              { method: 'DELETE' })
 }
 
@@ -430,7 +463,7 @@ export const CONNECTOR_CATALOGUE = [
   { group: 'Google', items: [
     { kind: 'gdrive', name: 'Google Drive', desc: 'Docs, sheets and PDFs in your drive', auth: 'oauth' },
     { kind: 'gchat', name: 'Google Chat', desc: 'Messages in spaces and DMs', auth: 'oauth' },
-    { kind: 'gmail', name: 'Gmail', desc: 'Threads you sent or were named in', auth: 'oauth', available: false },
+    { kind: 'gmail', name: 'Gmail', desc: 'Email messages and their source links', auth: 'oauth' },
   ] },
   { group: 'Microsoft', items: [
     { kind: 'outlook', name: 'Outlook', desc: 'Mail and calendar invitations', auth: 'oauth', available: false },
@@ -440,6 +473,9 @@ export const CONNECTOR_CATALOGUE = [
   { group: 'Code and tickets', items: [
     { kind: 'github', name: 'GitHub', desc: 'A repo, at a snapshot or across its history', auth: 'token' },
     { kind: 'jira', name: 'Jira', desc: 'Issues, comments and assignees', auth: 'token', available: false },
+  ] },
+  { group: 'Web', items: [
+    { kind: 'links', name: 'Web pages', desc: 'Extract text from a list of website URLs', auth: 'none' },
   ] },
   { group: 'Advanced', advanced: true, items: [
     { kind: 'whatsapp', name: 'WhatsApp', desc: 'Opt-in only — pairs a browser session', auth: 'browser' },
@@ -466,10 +502,10 @@ export async function startPipelineRun(connector, { skipAbsorb = false } = {}) {
 }
 
 export async function sourceFailures({ projectId, kind = null } = {}) {
-  return api(`/api/sources/failures${qs({ project_id: remember(projectId), kind })}`)
+  return api(`/api/sources/failures${qs({ project_id: projectId, kind })}`)
 }
 export async function pipelineRuns({ projectId, connector = null, limit = 25 } = {}) {
-  return api(`/api/pipeline/runs${qs({ project_id: remember(projectId), connector, limit })}`)
+  return api(`/api/pipeline/runs${qs({ project_id: projectId, connector, limit })}`)
 }
 export async function pipelineRun(runId) {
   return api(`/api/pipeline/runs/${encodeURIComponent(runId)}`)
@@ -483,25 +519,29 @@ export async function stopPipelineRun(runId) {
   return api(`/api/pipeline/runs/${encodeURIComponent(runId)}/stop`, { method: 'POST' })
 }
 
+export async function retryPipelineRun(runId) {
+  return api(`/api/pipeline/runs/${encodeURIComponent(runId)}/retry`, { method: 'POST' })
+}
+
 // -------------------------------------------------------------------- repos
-// Not project-scoped: /api/repos has no project_id, a tracked repo is global.
-// `id` is "owner/name" and the slash is part of the path, so it is never
+// Listing and bulk actions use the selected project. `id` is "owner/name"
+// and the slash is part of the path, so it is never
 // encodeURIComponent'd here.
 
-export async function listRepos() {
-  return api('/api/repos')
+export async function listRepos(projectId) {
+  return api(`/api/repos${qs({ project_id: projectId })}`)
 }
 
 export async function checkRepo(url) {
   return api('/api/repos/check', { method: 'POST', body: JSON.stringify({ url }) })
 }
 
-export async function addRepo(url, branch, token = '') {
+export async function addRepo(url, branch, token = '', projectId) {
   // The token is only ever sent, never read back: /api/repos returns the repo
   // row, which deliberately has no token field.
   return api('/api/repos', {
     method: 'POST',
-    body: JSON.stringify({ url, branch: branch || undefined,
+    body: JSON.stringify({ url, branch: branch || undefined, project_id: projectId,
                            token: token || undefined }),
   })
 }
@@ -514,8 +554,8 @@ export async function runRepoStep(id, step, body) {
   return api(`/api/repos/${id}/${step}`, { method: 'POST', body: JSON.stringify(body || {}) })
 }
 
-export async function sweepRepos() {
-  return api('/api/repos/sweep', { method: 'POST' })
+export async function sweepRepos(projectId) {
+  return api(`/api/repos/sweep${qs({ project_id: projectId })}`, { method: 'POST' })
 }
 
 export async function repoCommits(id, limit = 30) {

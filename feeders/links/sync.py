@@ -42,6 +42,8 @@ answers. Only a generic web page is genuinely new work here.
 from __future__ import annotations
 
 import hashlib
+import gzip
+import io
 import json
 import ipaddress
 import os
@@ -53,6 +55,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path
@@ -60,10 +63,27 @@ from pathlib import Path
 import feeders.gdrive.sync as _gdrive
 from feeders.gdrive.sync import _pdf_to_text
 from feeders.links import browser as _browser
+from feeders.result import SyncResult, failure
+from feeders import options
 from pipeline.ingest import DATA_EXT, summarize_dataset
+from pipeline.source_files import source_path as resolve_source_path
 from server import config, sources as sources_index
 
 SOURCES_SUBDIR = "links"
+
+
+class _FetchResult(tuple):
+    def __new__(cls, written, html_text, error=None):
+        result = super().__new__(cls, (written, html_text))
+        result.failure = error
+        return result
+
+
+class _BatchResult(tuple):
+    def __new__(cls, written, html_texts, failures):
+        result = super().__new__(cls, (written, html_texts))
+        result.failures = failures
+        return result
 
 # Bare URLs and the URL half of markdown links both match this — a link
 # inside [text](url) still matches starting at "https", the surrounding
@@ -105,8 +125,9 @@ def discover_urls(target_repo: Path) -> list[str]:
     URLs discovered in other feeders' content are reached through expand_one_hop,
     not by re-scanning disk."""
     seen: dict[str, None] = {}
-    for md in sorted((target_repo / "sources").glob("*/*.md")):
-        if md.parent.name == SOURCES_SUBDIR:
+    source_root = resolve_source_path(target_repo, "sources/.")
+    for md in sorted(source_root.rglob("*.md")):
+        if md.relative_to(source_root).parts[0] == SOURCES_SUBDIR:
             continue
         try:
             text = md.read_text(errors="replace")
@@ -220,6 +241,39 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
 _opener = urllib.request.build_opener(_SafeRedirectHandler)
 
 
+def _decode_response(data: bytes, encoding: str) -> bytes:
+    """Decode transport compression with the same cap as the wire response."""
+    encodings = [value.strip().lower() for value in encoding.split(",") if value.strip()]
+    # Some intermediary caches serve gzip bytes without Content-Encoding.
+    if not encodings and data.startswith(b"\x1f\x8b"):
+        encodings = ["gzip"]
+    for coding in reversed(encodings):
+        if coding == "identity":
+            continue
+        if coding in {"gzip", "x-gzip"}:
+            with gzip.GzipFile(fileobj=io.BytesIO(data)) as stream:
+                data = stream.read(MAX_FETCH_BYTES + 1)
+        elif coding == "deflate":
+            # HTTP deflate normally includes a zlib wrapper; a few servers
+            # emit the raw format. Both paths remain bounded during expansion.
+            for window in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
+                try:
+                    decoder = zlib.decompressobj(window)
+                    decoded = decoder.decompress(data, MAX_FETCH_BYTES + 1)
+                    break
+                except zlib.error:
+                    if window < 0:
+                        raise
+            if len(decoded) <= MAX_FETCH_BYTES and not decoder.eof:
+                raise ValueError("truncated deflate HTTP response")
+            data = decoded
+        else:
+            raise ValueError(f"unsupported HTTP content encoding: {coding}")
+        if len(data) > MAX_FETCH_BYTES:
+            raise ValueError(f"decoded response exceeds {MAX_FETCH_BYTES}-byte fetch ceiling")
+    return data
+
+
 def _get_bytes(url: str, timeout: int = 30) -> bytes:
     """No Authorization header, deliberately — every other fetch in this
     module is anonymous. A 30s timeout, shorter than Drive's 60s: we don't
@@ -227,12 +281,14 @@ def _get_bytes(url: str, timeout: int = 30) -> bytes:
     (see the per-URL retry/backoff in run(), Task 10)."""
     _validate_public_address(url)
     _wait_turn(url)
-    req = urllib.request.Request(url, headers={"User-Agent": "cairn-links/1"})
+    req = urllib.request.Request(url, headers={"User-Agent": "cairn-links/1",
+                                               "Accept-Encoding": "gzip, deflate"})
     with _opener.open(req, timeout=timeout) as r:
         data = r.read(MAX_FETCH_BYTES + 1)
+        encoding = r.headers.get("Content-Encoding", "")
     if len(data) > MAX_FETCH_BYTES:
         raise ValueError(f"response exceeds {MAX_FETCH_BYTES}-byte fetch ceiling: {url}")
-    return data
+    return _decode_response(data, encoding)
 
 
 class _TextExtractor(HTMLParser):
@@ -305,6 +361,7 @@ _LINK_DRIVE_MIMES = (_gdrive._EXPORTABLE_MIME, _gdrive._PDF_MIME,
 
 def _wanted_via_link(meta: dict) -> bool:
     return (meta.get("mimeType") in _LINK_DRIVE_MIMES
+            or meta.get("mimeType") in _gdrive._OFFICE_MIMES
             or meta.get("name", "").lower().endswith(_gdrive._TEXT_EXTS))
 
 
@@ -364,7 +421,7 @@ def write_entry(target_repo: Path, url: str, body: str, source_type: str, ext: s
     stored = raw_bytes if raw_bytes is not None else body.encode()
     sha = hashlib.sha1(stored).hexdigest()[:8]
     slug = url_to_slug(url)
-    sources_dir = target_repo / "sources" / SOURCES_SUBDIR
+    sources_dir = resolve_source_path(target_repo, f"sources/{SOURCES_SUBDIR}")
     inbox_dir = target_repo / "raw" / "inbox"
     sources_dir.mkdir(parents=True, exist_ok=True)
     inbox_dir.mkdir(parents=True, exist_ok=True)
@@ -380,6 +437,12 @@ def write_entry(target_repo: Path, url: str, body: str, source_type: str, ext: s
     # inbox entry would never be created — a silent, permanent skip.
     # Requiring the inbox entry to exist too makes that state self-healing.
     if existing == sha and inbox_path.is_file():
+        if project_id:
+            sources_index.record(
+                id=f"link-{link_id(url)}", project_id=project_id, kind="links",
+                type="link", name=url, path=f"sources/{SOURCES_SUBDIR}/{slug}.{ext}",
+                url=url, size=len(stored), sha=sha, authors=authors or [],
+                connection_id=connection_id)
         return False
 
     if raw_bytes is not None:
@@ -509,7 +572,7 @@ def _attempt(target_repo: Path, url: str, project_id: str | None = None,
                         id=f"link-{link_id(url)}", project_id=project_id,
                         kind="links", name=url, url=url, reason=e,
                         connection_id=connection_id)
-                return False, None
+                return _FetchResult(False, None, failure(f"link-{link_id(url)}", url, e))
             time.sleep(2 * attempt)
 
     try:
@@ -528,8 +591,12 @@ def _attempt(target_repo: Path, url: str, project_id: str | None = None,
         written = write_entry(target_repo, url, payload, kind, ext, authors=authors,
                               project_id=project_id, connection_id=connection_id)
         return written, (payload if kind == "external_article" else None)
-    except Exception:
-        return False, None
+    except Exception as e:
+        if project_id:
+            sources_index.record_failure(id=f"link-{link_id(url)}", project_id=project_id,
+                                         kind="links", name=url, url=url, reason=e,
+                                         connection_id=connection_id)
+        return _FetchResult(False, None, failure(f"link-{link_id(url)}", url, e))
 
 
 # ponytail: fixed pool size. Each _attempt() is dominated by one URL's own
@@ -552,19 +619,24 @@ def _fetch_batch(target_repo: Path, urls: list[str],
     """
     written = 0
     kept_html: list[str] = []
+    failures = []
     with ThreadPoolExecutor(max_workers=FETCH_WORKERS) as pool:
-        for url, (ok, html_text) in zip(
+        for url, result in zip(
                 urls, pool.map(lambda u: _attempt(target_repo, u, project_id, connection_id), urls)):
+            ok, html_text = result
             written += ok
+            if getattr(result, "failure", None):
+                failures.append(result.failure)
             if html_text:
                 kept_html.append(html_text)
             if on_item:
                 on_item(url)
-    return written, kept_html
+    return _BatchResult(written, kept_html, failures)
 
 
 def run(project_id: str | None = None, on_progress=None,
-        connection_id: str | None = None) -> tuple[int, int]:
+        connection_id: str | None = None, urls: list[str] | None = None,
+        max_items: int = 0) -> SyncResult:
     """Returns (items_seen, items_written). items_seen counts every fetch
     ATTEMPT, successes and failures alike, since the cap bounds run time and
     risk regardless of outcome. Every discovered URL is attempted on every
@@ -578,6 +650,8 @@ def run(project_id: str | None = None, on_progress=None,
     first pass's HTML, so no true denominator exists until the run is over — and
     the cap is the ceiling both passes share.
     """
+    max_items = options.max_items(max_items)
+    urls = options.urls(urls)
     if project_id is None:
         from server import projects
         project_id = projects.ensure_default()
@@ -585,9 +659,12 @@ def run(project_id: str | None = None, on_progress=None,
     # would otherwise spend it once and never use the fallback again.
     _browser.reset_budget()
     target_repo = config.GDRIVE_TARGET_REPO
-    cap = config.LINKS_FETCH_CAP
+    cap = min(config.LINKS_FETCH_CAP, max_items) if max_items else config.LINKS_FETCH_CAP
 
-    urls = discover_urls(target_repo)
+    # Explicit website connections only follow the URLs the user selected.
+    # A links connection with no URL list retains discovery from other sources.
+    explicit_urls = urls is not None
+    urls = list(dict.fromkeys(urls)) if explicit_urls else discover_urls(target_repo)
     batch = urls[:cap]
     cap_skipped = len(urls) - len(batch)
 
@@ -599,17 +676,19 @@ def run(project_id: str | None = None, on_progress=None,
         if on_progress:
             on_progress(done, cap, url)
 
-    written, kept_html = _fetch_batch(target_repo, batch, project_id, tick,
-                                      connection_id)
+    initial = _fetch_batch(target_repo, batch, project_id, tick, connection_id)
+    written, kept_html = initial
+    failures = list(getattr(initial, "failures", []))
     attempted = set(batch)
     seen = len(batch)
 
-    hop_urls = expand_one_hop(kept_html, attempted)
+    hop_urls = [] if explicit_urls else expand_one_hop(kept_html, attempted)
     hop_batch = hop_urls[:max(0, cap - seen)]
     cap_skipped += len(hop_urls) - len(hop_batch)
     # second-hop pages are not scanned further — their kept_html is unused.
-    hop_written, _ = _fetch_batch(target_repo, hop_batch, project_id, tick,
-                                  connection_id)
+    second = _fetch_batch(target_repo, hop_batch, project_id, tick, connection_id)
+    hop_written, _ = second
+    failures.extend(getattr(second, "failures", []))
     written += hop_written
     seen += len(hop_batch)
 
@@ -617,5 +696,7 @@ def run(project_id: str | None = None, on_progress=None,
     # many discovered/hop URLs the cap left unattempted this run.
     if cap_skipped:
         print(f"links: fetch cap {cap} reached; {cap_skipped} URLs unprocessed this run")
+        failures.append(failure("links-backlog", "Unprocessed links",
+                                f"Fetch cap reached; {cap_skipped} URLs remain"))
 
-    return seen, written
+    return SyncResult(seen, written, failures)

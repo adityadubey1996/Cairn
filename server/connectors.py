@@ -114,6 +114,17 @@ REGISTRY: list[Connector] = [
         setup="Same Google OAuth client as Drive — one consent covers both. Also enable the Google Chat API on the project.",
     ),
     Connector(
+        id="gmail",
+        name="Gmail",
+        kind="gmail",
+        description="Email conversations from your connected Google account",
+        configured=lambda: _gauth().has_scopes(("https://www.googleapis.com/auth/gmail.readonly",)),
+        module="feeders.gmail.sync",
+        oauth=GOOGLE_OAUTH,
+        requires=("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"),
+        setup="Enable the Gmail API in your Google Cloud project, then Connect to grant read-only mail access. Existing Drive/Chat connections need one new consent for Gmail.",
+    ),
+    Connector(
         id="whatsapp",
         name="WhatsApp",
         kind="browser",
@@ -240,8 +251,12 @@ def run_now(connector_id: str, project_id: str | None = None) -> dict:
     run_id = start_run(conn.id)
     try:
         mod = importlib.import_module(conn.module)
-        seen, written = mod.run(project_id=project_id)
-        finish_run(run_id, status="ok", items_seen=seen, items_written=written)
+        result = mod.run(project_id=project_id)
+        seen, written = result
+        failed = getattr(result, "failed", 0)
+        status = "partial" if failed else "ok"
+        finish_run(run_id, status=status, items_seen=seen, items_written=written,
+                   error=f"{failed} source(s) need retry" if failed else None)
         if written:
             # A feeder writes sources/ — fetched Drive docs, transcripts. That
             # content is NOT derivable: re-fetching gives what the document says
@@ -252,7 +267,8 @@ def run_now(connector_id: str, project_id: str | None = None) -> dict:
                 storage.push()
             except Exception:
                 log.exception("s3 push failed; %s sources are still on disk", conn.id)
-        return {"status": "ok", "items_seen": seen, "items_written": written}
+        return {"status": status, "items_seen": seen, "items_written": written,
+                "items_failed": failed}
     except Exception as e:
         finish_run(run_id, status="error", error=str(e)[:2000])
         raise

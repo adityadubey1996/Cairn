@@ -10,6 +10,7 @@ from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from feeders.links import sync
+from feeders.check_support import run_offline
 
 
 def check_extract_urls_from_text() -> None:
@@ -208,6 +209,10 @@ def check_fetch_via_drive() -> None:
     sync._gdrive._get_json = lambda url: {"id": "f2", "name": "budget.xlsx",
                                           "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                           "modifiedTime": "2026-08-05T10:00:00.000Z"}
+    assert sync.fetch_via_drive("f2")[1] == "binary_doc", "Office documents are extractable"
+    sync._gdrive._get_json = lambda url: {"id": "f2", "name": "recording.mp4",
+                                          "mimeType": "video/mp4",
+                                          "modifiedTime": "2026-08-05T10:00:00.000Z"}
     assert sync.fetch_via_drive("f2") is None, "unsupported mime type must not crash"
 
     # Test that export_text raising an exception returns None, not propagating
@@ -367,7 +372,7 @@ def check_run_full_pipeline() -> None:
 
         sync._dispatch_fetch = fake_dispatch
 
-        seen, written = sync.run()
+        seen, written = run_offline(sync)
         assert seen == 4, seen  # 3 initial + 1 one-hop; dead.example counted as an attempt
         assert written == 3, written  # good, data, second-hop written; dead wrote nothing
         assert not (repo / f"raw/inbox/link-{sync.link_id('https://dead.example/gone')}.md").is_file()
@@ -390,7 +395,7 @@ def check_run_full_pipeline() -> None:
         # second-hop again from good.example's fetched text. Content is
         # unchanged, so nothing gets WRITTEN — the dedup is via sha compare, not
         # by avoiding re-fetch.
-        seen2, written2 = sync.run()
+        seen2, written2 = run_offline(sync)
         assert seen2 == 4, seen2
         assert written2 == 0, written2
 
@@ -404,7 +409,7 @@ def check_fetch_cap_enforced() -> None:
         (repo / "sources/gchat/day.md").write_text(
             "https://a.example/1 https://a.example/2 https://a.example/3\n")
         sync._dispatch_fetch = lambda url: ("external_article", "text", [])
-        seen, written = sync.run()
+        seen, written = run_offline(sync)
         assert seen == 2, "must stop at the cap, not process all 3"
 
 
@@ -419,9 +424,9 @@ def check_revision_detected_on_recheck() -> None:
         (repo / "sources/gchat/day.md").write_text("https://changing.example/page\n")
 
         sync._dispatch_fetch = lambda url: ("external_article", "version one", [])
-        sync.run()
+        run_offline(sync)
         sync._dispatch_fetch = lambda url: ("external_article", "version two, revised", [])
-        sync.run()
+        run_offline(sync)
 
         entry = (repo / f"raw/inbox/link-{sync.link_id('https://changing.example/page')}.md").read_text()
         assert "previous_sha:" in entry, entry
@@ -445,7 +450,7 @@ def check_data_raw_produces_inbox_entry() -> None:
             ("data-raw", b"a,b\n1,2\n", []) if url == "https://data.example/table.csv"
             else ("data-raw", b'{"name":"test","value":42}', [])
         )
-        seen, written = sync.run()
+        seen, written = run_offline(sync)
 
         # Both data URLs should be written
         assert written == 2, f"expected 2 written (csv + json), got {written}"
@@ -501,7 +506,7 @@ def check_write_phase_error_doesnt_crash_run() -> None:
         sync.write_entry = fake_write_entry
 
         # This should NOT raise; the run should complete with partial results
-        seen, written = sync.run()
+        seen, written = run_offline(sync)
 
         # All 3 URLs should be attempted (seen=3)
         assert seen == 3, f"expected 3 seen (all URLs attempted), got {seen}"

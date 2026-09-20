@@ -8,6 +8,7 @@ Postgres, no subprocess.
 """
 import sys
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from pipeline_run import parse_progress, parse_result, parse_unit, units_for  # noqa: E402
@@ -94,6 +95,7 @@ def test_phase_scrape_forwards_the_project_id():
     """
     import types
     import pipeline_run as pr
+    from server import connections
 
     calls = {}
 
@@ -113,7 +115,8 @@ def test_phase_scrape_forwards_the_project_id():
     pr.runs = FakeRuns()
     pr.importlib.import_module = lambda _name: fake_feeder
     try:
-        record = pr.phase_scrape("run-1", "gdrive", "proj-42", "gdrive-conn9")
+        with patch.object(connections, "_require", return_value={"config": {}}):
+            record = pr.phase_scrape("run-1", "gdrive", "proj-42", "gdrive-conn9")
     finally:
         pr.runs, pr.importlib.import_module = orig_runs, orig_import
 
@@ -122,6 +125,58 @@ def test_phase_scrape_forwards_the_project_id():
     # Phase 3: rows are attributed to the connection whose sync produced them.
     assert calls["connection_id"] == "gdrive-conn9", calls
     assert record["seen"] == 7 and record["written"] == 3, record
+
+
+def test_scrape_only_forwards_allowed_source_scope_and_reports_partial_result():
+    import types
+    import pipeline_run as pr
+    from feeders.result import SyncResult
+    from server import connections
+
+    received = {}
+    options = {"urls": ["https://example.com"], "max_items": 2,
+               "project_id": "untrusted-project", "connection_id": "other", "query": "not-for-links"}
+
+    def scrape(**kwargs):
+        received.update(kwargs)
+        return SyncResult(2, 1, [{"id": "failed-url", "error": "timeout"}])
+
+    with patch.object(pr, "runs"), \
+         patch.object(pr.importlib, "import_module", return_value=types.SimpleNamespace(run=scrape)), \
+         patch.object(connections, "_require", return_value={"config": options}):
+        result = pr.phase_scrape("run", "links", "trusted-project", "trusted-connection")
+    assert received["project_id"] == "trusted-project"
+    assert received["connection_id"] == "trusted-connection"
+    assert received["urls"] == options["urls"] and received["max_items"] == 2
+    assert "query" not in received
+    assert result["failed"] == 1 and result["complete"] is False
+
+
+def test_optional_link_phase_keeps_its_partial_failure_signal():
+    import pipeline_run as pr
+    from feeders.result import SyncResult
+
+    with patch.object(pr, "runs"), \
+         patch("feeders.links.sync.run", return_value=SyncResult(2, 1, [{"id": "failed", "error": "timeout"}])):
+        result = pr.phase_links("run", "project")
+    assert result["seen"] == 2 and result["written"] == 1
+    assert result["failed"] == 1 and result["complete"] is False
+
+
+def test_chat_sample_limit_is_forwarded_and_truncation_stays_incomplete():
+    import types
+    import pipeline_run as pr
+    from feeders.result import SyncResult
+    from server import connections
+
+    feeder = Mock(return_value=SyncResult(1, 1, [{"id": "gchat-backlog", "error": "sample limit"}]))
+    with patch.object(pr, "runs"), \
+         patch.object(pr.importlib, "import_module", return_value=types.SimpleNamespace(run=feeder)), \
+         patch.object(connections, "_require", return_value={"config": {"max_items": 1, "query": "not-for-chat"}}):
+        result = pr.phase_scrape("run", "gchat", "project", "connection")
+    assert feeder.call_args.kwargs["max_items"] == 1
+    assert "query" not in feeder.call_args.kwargs
+    assert result["complete"] is False and result["failed"] == 1
 
 
 if __name__ == "__main__":

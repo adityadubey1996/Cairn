@@ -272,6 +272,13 @@ def _anthropic_body(messages, provider, temperature, stream):
 
 
 def _request(messages, provider, temperature, stream):
+    if provider.get("preset") == "ollama":
+        # The OpenAI compatibility endpoint cannot set Ollama's context window.
+        # Native requests reserve room for the full retrieved article context.
+        return _post(f"{provider['base'].removesuffix('/v1')}/api/chat",
+                     {"model": provider["model"], "messages": messages, "stream": stream,
+                      "options": {"temperature": temperature, "num_ctx": 32768,
+                                  "num_predict": 4096}}, {})
     if provider["kind"] == "anthropic":
         return _post(f"{provider['base']}/messages",
                      _anthropic_body(messages, provider, temperature, stream),
@@ -287,6 +294,10 @@ def complete(messages: list[dict], provider: dict | None = None,
     provider = provider or resolve()
     with _request(messages, provider, temperature, stream=False) as r:
         data = json.loads(r.read())
+    if provider.get("preset") == "ollama":
+        if data.get("error"):
+            raise RuntimeError(data["error"])
+        return (data.get("message") or {}).get("content", "")
     if provider["kind"] == "anthropic":
         return "".join(b.get("text", "") for b in data.get("content", [])
                        if b.get("type") == "text")
@@ -302,6 +313,18 @@ def stream(messages: list[dict], provider: dict | None = None,
     try:
         for raw in r:
             line = raw.decode("utf-8", "replace").strip()
+            if provider.get("preset") == "ollama":
+                if not line:
+                    continue
+                event = json.loads(line)
+                if event.get("error"):
+                    raise RuntimeError(event["error"])
+                text = (event.get("message") or {}).get("content")
+                if text:
+                    yield text
+                if event.get("done"):
+                    break
+                continue
             if not line.startswith("data: "):
                 continue
             payload = line[6:]
@@ -343,7 +366,7 @@ def absorb_env() -> dict:
     Anthropic has no /chat/completions, so a Claude-only install cannot absorb
     and is told exactly that instead of getting an opaque 404 from urllib.
     """
-    if _env("ABSORB_API_KEY") or _env("GROQ_API_KEY"):
+    if _env("ABSORB_API_KEY"):
         return {}
     provider = resolve()  # raises NoProvider with its own hint
     if provider["kind"] == "anthropic":
@@ -354,6 +377,8 @@ def absorb_env() -> dict:
             "run Ollama, which absorb can use for free. Answering in chat is "
             "unaffected and still uses Claude.")
     env = {"ABSORB_BASE": provider["base"], "ABSORB_MODEL": provider["model"]}
+    if provider["preset"] == "ollama":
+        env["ABSORB_PROTOCOL"] = "ollama"
     if provider["key"]:
         env["ABSORB_API_KEY"] = provider["key"]
     else:

@@ -49,7 +49,7 @@ export function Kit() {
     let cancelled = false
     Promise.all([
       api.listProjects(), api.listConnections('p1'), api.listSources({ projectId: 'p1' }),
-      api.listTimeline({ projectId: 'p1' }), api.listPeople({ projectId: 'p1' }), api.personEvents('rk'),
+      api.listTimeline({ projectId: 'p1' }), api.listPeople({ projectId: 'p1' }), api.personEvents('rk', 'p1'),
     ]).then(([projects, connections, sources, timeline, people, events]) => {
       if (!cancelled) setData({ projects, connections, sources: sources.rows, timeline, people, events })
     })

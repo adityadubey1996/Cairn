@@ -112,15 +112,16 @@ def per_run(project_id: str, run_ids: list[str]) -> dict[str, dict]:
     return out
 
 
-def reset_stale(project_id: str) -> int:
+def reset_stale(project_id: str, run_id: str | None = None) -> int:
     """A killed run leaves units claiming to be running and nothing will ever
     move them. Put them back where the next run can pick them up."""
     with connect() as c:
         rows = c.execute(
             "UPDATE brain_ingest_units SET state = 'pending', "
             "  error = 'the run ended before this unit finished' "
-            "WHERE project_id = %s AND state = 'running' RETURNING unit_id",
-            (project_id,)).fetchall()
+            "WHERE project_id = %s AND state = 'running' "
+            + ('AND run_id = %s ' if run_id else '') + 'RETURNING unit_id',
+            (project_id, run_id) if run_id else (project_id,)).fetchall()
     return len(rows)
 
 

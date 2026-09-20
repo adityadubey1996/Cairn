@@ -13,13 +13,13 @@ import json
 from collections import Counter
 from urllib.parse import quote
 
-from .. import index, llm
+from .. import corpus, llm
 from ..db import connect
-from ..gitmeta import github_blob_url, github_slug_and_ref
 from ..wikilib import CITE, GRADE
 from .assemble import assemble
 from .condense import condense
 from .framing import system_prompt
+from .evidence import hydrate
 from .recall.local import recall
 
 
@@ -27,16 +27,9 @@ def _sse(obj) -> str:
     return f"data: {json.dumps(obj)}\n\n"
 
 
-def _github_fields(root) -> dict:
-    """Public GitHub coordinates — a checkout's folder name need not match the
-    remote slug, so the slug is resolved from the remote, never assumed."""
-    head = index.head_of(root)
-    preferred = head if head and head not in ("?",) else None
-    resolved = github_slug_and_ref(root.parent, preferred)
-    if not resolved:
-        return {}
-    slug, ref = resolved
-    return {"github": slug, "ref": ref}
+def _github_fields(root, article_text: str = '') -> dict:
+    metadata = corpus.provenance(root, article_text)
+    return {k: metadata[k] for k in ('github', 'ref') if k in metadata}
 
 
 def _citations(answer: str, context: list[dict]) -> list[dict]:
@@ -47,9 +40,8 @@ def _citations(answer: str, context: list[dict]) -> list[dict]:
             continue
         seen.add((path, sha))
         if path.startswith("sources/"):
-            # sources/ are S3-only: the href goes through the authed view
-            # route, which mints a presigned URL at click time. Built even
-            # without a matching context article — the path alone suffices.
+            # The authenticated reader resolves the cited local revision,
+            # with optional object-store fallback, at click time.
             out.append({"path": path, "sha": sha, "repo": "ai-brain",
                         "href": f"/api/sources/view?path={quote(path)}&etag={sha}"})
             continue
@@ -58,11 +50,11 @@ def _citations(answer: str, context: list[dict]) -> list[dict]:
             out.append({"path": path, "sha": sha, "repo": None})
             continue
         root = article["root"]
-        fields = _github_fields(root)
+        fields = _github_fields(root, article['text'])
         entry = {"path": path, "sha": sha, "repo": root.parent.name, **fields}
-        href = github_blob_url(root.parent, path, fields.get("ref"))
-        if href:
-            entry["href"] = href
+        if fields.get('github') and fields.get('ref'):
+            entry['href'] = (f"https://github.com/{fields['github']}/blob/"
+                             f"{quote(fields['ref'], safe='')}/{quote(path.lstrip('/'), safe='/')}")
         out.append(entry)
     return out
 
@@ -71,8 +63,16 @@ def _trust(context: list[dict]) -> dict:
     grades = Counter()
     for a in context:
         grades.update(GRADE.findall(a["text"]))
-    heads = {a["root"].parent.name: index.head_of(a["root"])[:8]
-             for a in context}
+    heads = {}
+    for a in context:
+        metadata = corpus.provenance(a['root'], a['text'])
+        name = metadata.get('github') or metadata['repo']
+        ref = metadata['head'][:8]
+        # A root can contain articles compiled at several pinned revisions.
+        if name in heads and heads[name] != ref:
+            heads[name] = ', '.join(sorted(set(heads[name].split(', ')) | {ref}))
+        else:
+            heads[name] = ref
     return {"grades": dict(grades), "heads": heads,
             "articles": [a["title"] for a in context]}
 
@@ -94,7 +94,7 @@ def run_pipeline(conversation_id, turns: list[dict], content: str, project_id: s
                        for _root, rel, score in seeds]
     yield _sse({"stage": "recall", "hits": process["hits"]})
 
-    context = assemble(query, seeds=seeds)
+    context = hydrate(assemble(query, seeds=seeds), query)
     process["articles"] = [{"title": a["title"], "path": a["rel"],
                             "repo": a["root"].parent.name} for a in context]
     yield _sse({"stage": "context", "articles": process["articles"]})

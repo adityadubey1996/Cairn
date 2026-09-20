@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-VAR = ROOT / "var"  # runtime caches: index dbs, sync state — all disposable
+VAR = ROOT / "var"  # includes durable source revisions/local profile plus rebuildable indexes
 
 
 def _load_env(path: Path) -> None:
@@ -16,7 +17,11 @@ def _load_env(path: Path) -> None:
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip())
+        # Blank means "use the default". .env.example lists every setting
+        # blank, and os.environ.get(k, default) returns "" for a key that is
+        # present — which pointed clone/wiki/source dirs at the current directory.
+        if v.strip():
+            os.environ.setdefault(k.strip(), v.strip())
 
 
 _load_env(ROOT / ".env")
@@ -108,7 +113,9 @@ REPO_DISK_BUDGET_MB = int(os.environ.get("REPO_DISK_BUDGET_MB", "5000"))
 
 # Binaries and scripts the pipeline shells out to. Overridable because the dev
 # machine uses a uv tool and a venv while the image uses its own python.
-PYTHON_BIN = os.environ.get("PYTHON_BIN", "python3")
+# The interpreter running this server, so a source checkout's pipeline steps
+# see its venv. The image sets PYTHON_BIN=python3 itself.
+PYTHON_BIN = os.environ.get("PYTHON_BIN", sys.executable)
 GRAPHIFY_BIN = os.environ.get("GRAPHIFY_BIN", "graphify")
 PIPELINE_DIR = Path(os.environ.get("PIPELINE_DIR", ROOT / "pipeline")).expanduser()
 

@@ -283,7 +283,7 @@ def probe(url: str) -> dict:
 
 # ---------------------------------------------------------------- persistence
 
-FIELDS = ("id, owner, name, url, branch, state, last_error, clone_path, "
+FIELDS = ("id, project_id, owner, name, url, branch, state, last_error, clone_path, "
           "wiki_root, head_sha, pinned_sha, articles, queue_new, queue_changed, "
           "clone_bytes, last_used_at, created_at, updated_at")
 
@@ -315,7 +315,7 @@ def update(repo_id: str, **fields) -> None:
                   (*fields.values(), repo_id))
 
 
-def add(url: str, branch: str | None = None, token: str = "") -> dict:
+def add(url: str, branch: str | None = None, token: str = "", project_id: str | None = None) -> dict:
     if is_local(url):
         owner, name, _p = parse_local(url)
     else:
@@ -338,11 +338,14 @@ def add(url: str, branch: str | None = None, token: str = "") -> dict:
     if info["branches"] and b not in info["branches"]:
         raise Invalid(f"branch {b!r} not on {slug}")
 
+    if not project_id:
+        from . import projects
+        project_id = projects.ensure_default()
     with connect() as c:
         c.execute(
-            "INSERT INTO brain_repos (id, owner, name, url, branch, state) "
-            "VALUES (%s, %s, %s, %s, %s, 'added')",
-            (slug, owner, name, info["url"], b))
+            "INSERT INTO brain_repos (id, owner, name, url, branch, state, project_id) "
+            "VALUES (%s, %s, %s, %s, %s, 'added', %s)",
+            (slug, owner, name, info["url"], b, project_id))
     return _require(slug)
 
 
@@ -393,6 +396,23 @@ class NotCloned(RuntimeError):
     """Maps to 409 — the step needs a clone that does not exist yet."""
 
 
+def _raw_dir(row: dict) -> Path | None:
+    if not row.get('clone_path'):
+        return None
+    raw = Path(row['clone_path']) / 'raw'
+    return raw / f"at-{row['pinned_sha'][:12]}" if row.get('pinned_sha') else raw
+
+
+def _completed_units(row: dict, raw: Path) -> set[str]:
+    from pipeline.completion import read_completed
+    try:
+        units = json.loads((raw / '_manifest.json').read_text())
+        done = read_completed(Path(row['wiki_root']) / '_absorb_log.json') if row.get('wiki_root') else {}
+        return {u['id'] for u in units if u.get('sha') and done.get(u['id']) == u['sha']}
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
 def queue_remaining(row: dict) -> tuple[int, int]:
     """(remaining, absorbed) — what is actually left to buy.
 
@@ -401,8 +421,10 @@ def queue_remaining(row: dict) -> tuple[int, int]:
     honest figure is the pending queue minus the absorb log, which is what
     absorb_runner itself filters on.
     """
-    clone = Path(row.get("clone_path") or "")
-    pending = clone / "raw" / "_pending.json"
+    raw = _raw_dir(row)
+    if not raw:
+        return 0, 0
+    pending = raw / "_pending.json"
     if not pending.is_file():
         return int(row.get("queue_new") or 0), 0
     try:
@@ -411,13 +433,7 @@ def queue_remaining(row: dict) -> tuple[int, int]:
     except Exception:
         return int(row.get("queue_new") or 0), 0
 
-    absorbed: set[str] = set()
-    log = Path(row.get("wiki_root") or "") / "_absorb_log.json"
-    if log.is_file():
-        try:
-            absorbed = set(json.loads(log.read_text()))
-        except Exception:
-            pass
+    absorbed = _completed_units(row, raw)
     return len(ids - absorbed), len(absorbed)
 
 
@@ -440,9 +456,11 @@ def queue(repo_id: str) -> dict:
     paying for articles about them.
     """
     row = _require(repo_id)
-    clone = Path(row["clone_path"] or "")
-    pending = clone / "raw" / "_pending.json"
-    manifest = clone / "raw" / "_manifest.json"
+    raw = _raw_dir(row)
+    if not raw:
+        raise NotCloned('clone and ingest the repository first')
+    pending = raw / "_pending.json"
+    manifest = raw / "_manifest.json"
     if not pending.is_file() or not manifest.is_file():
         raise NotCloned("ingest has not run yet")
     try:
@@ -451,13 +469,7 @@ def queue(repo_id: str) -> dict:
     except Exception as e:
         raise RuntimeError(f"unreadable queue: {e}")
 
-    absorbed = set()
-    log = Path(row["wiki_root"] or "") / "_absorb_log.json"
-    if log.is_file():
-        try:
-            absorbed = set(json.loads(log.read_text()))
-        except Exception:
-            pass
+    absorbed = _completed_units(row, raw)
 
     def rows(ids):
         out = []
@@ -499,7 +511,21 @@ _lock = threading.Lock()
 
 def busy() -> dict[str, str]:
     with _lock:
-        return dict(_jobs)
+        out = dict(_jobs)
+    for rid, row in active_jobs().items():
+        out[rid] = row['phase'] or row['step'] or row['status']
+    return out
+
+
+def active_jobs() -> dict[str, dict]:
+    out = {}
+    with connect() as c:
+        for row in c.execute("SELECT id,connection_id,phase,status,step FROM brain_connector_runs "
+                             "WHERE connector_id='github' AND job IS NOT NULL "
+                             "AND status IN ('queued','running','cancelling') "
+                             "ORDER BY CASE WHEN status='queued' THEN 1 ELSE 0 END,started_at").fetchall():
+            out.setdefault(row['connection_id'], row)
+    return out
 
 
 def _claim(repo_id: str, step: str) -> None:

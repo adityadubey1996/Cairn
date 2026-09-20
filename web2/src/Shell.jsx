@@ -1,18 +1,17 @@
 import { useEffect, useState } from 'react'
-import { BookOpen, FolderGit2, MessageSquare, Plug, Settings, Sparkles, Upload, Users } from 'lucide-react'
+import { BookOpen, FolderGit2, Files, MessageSquare, Plug, Settings, Sparkles, Workflow, Users } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { ProjectSelector } from './components/ProjectSelector'
 import { TabNav } from './components/TabNav'
 
 export const TABS = [
   { id: 'connect', label: 'Connect', icon: Plug },
+  { id: 'files', label: 'Files', icon: Files },
+  { id: 'pipeline', label: 'Pipeline', icon: Workflow },
   { id: 'wiki', label: 'Wiki', icon: BookOpen },
   { id: 'chat', label: 'Chat', icon: MessageSquare },
   { id: 'people', label: 'People', icon: Users },
   { id: 'repos', label: 'Repos', icon: FolderGit2 },
-  // Not under Connect: files are not a connector. They sit beside Repos, the
-  // other content source that is not an account you sign into.
-  { id: 'files', label: 'Files', icon: Upload },
 ]
 
 // V1 has no breakpoints at all; V2 is responsive by requirement. At tablet

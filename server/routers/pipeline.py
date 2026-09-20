@@ -14,8 +14,25 @@ from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, HTTPException
 
-from .. import config, ingest_units, pipeline_runs as runs, projects, sources
+from .. import config, ingest_units, llm, pipeline_runs as runs, projects, sources, jobs
+from ..db import connect
 from ..auth import current_user
+
+
+def _absorb_env_or_409() -> dict:
+    """Env overrides for absorb subprocesses. Raises 409 when nothing usable
+    is configured — including the free Ollama path via llm.absorb_env()."""
+    try:
+        return llm.absorb_env()
+    except llm.NoProvider as e:
+        raise HTTPException(409, str(e))
+
+
+def _spawn_pipeline(args: list[str], absorb_env: dict | None = None) -> None:
+    env = {**os.environ, **(absorb_env or {})}
+    subprocess.Popen(args, cwd=str(config.ROOT), start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     env=env)
 
 sys.path.insert(0, str(config.ROOT / "scripts"))
 from pipeline_run import CONNECTORS, units_for  # noqa: E402
@@ -41,16 +58,8 @@ def fetch_links(project_id: str, _email: str = Depends(current_user)):
     incremental sync take an hour and what got three crawls throttling each
     other.
     """
-    if runs.live("links"):
-        raise HTTPException(409, "a link fetch is already running")
-    run_id = runs.start("links")
-    subprocess.Popen(
-        [sys.executable, str(config.ROOT / "scripts" / "pipeline_run.py"),
-         "--connector", "links", "--run-id", run_id,
-         "--project-id", project_id, "--skip-absorb"],
-        cwd=str(config.ROOT), start_new_session=True,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return {"runId": run_id}
+    result = jobs.submit('links', project_id)
+    return {'runId': result['run_id']}
 
 
 @router.post("/units/retry", status_code=202)
@@ -100,7 +109,7 @@ WIKI_RUN = "wiki"
 def wiki_queue(project_id: str = "", _email: str = Depends(current_user)):
     project_id = project_id or projects.ensure_default()
     rows = sources.queued(project_id)
-    live = runs.live(WIKI_RUN)
+    live = runs.live(WIKI_RUN, project_id)
     return {**estimate_from(len(rows), runs.absorb_rate(WIKI_RUN)),
             "ids": [r["id"] for r in rows],
             "runId": str(live["id"]) if live else None}
@@ -112,19 +121,9 @@ def run_wiki_queue(payload: dict = Body(default={}), _email: str = Depends(curre
     ids = [r["id"] for r in sources.queued(project_id)]
     if not ids:
         raise HTTPException(409, "nothing is queued for the wiki")
-    if not config.GROQ_API_KEY:
-        raise HTTPException(409, "GROQ_API_KEY is not set — writing up is the only paid step")
-    if runs.live(WIKI_RUN):
-        raise HTTPException(409, "a wiki write-up is already in flight")
-
-    run_id = runs.start(WIKI_RUN)
-    args = [sys.executable, str(config.ROOT / "scripts" / "pipeline_run.py"),
-            "--run-id", run_id, "--project-id", project_id, "--absorb-only"]
-    for source_id in ids:
-        args += ["--only-source", source_id]
-    subprocess.Popen(args, cwd=str(config.ROOT), start_new_session=True,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return {"run_id": run_id, "queued": len(ids)}
+    _absorb_env_or_409()
+    result = jobs.submit(WIKI_RUN, project_id, absorb=True, ids=ids)
+    return {**result, 'queued': len(ids)}
 
 
 @router.post("/runs", status_code=202)
@@ -132,23 +131,12 @@ def start_run(payload: dict = Body(default={}), _email: str = Depends(current_us
     connector = (payload or {}).get("connector", "")
     skip_absorb = bool((payload or {}).get("skip_absorb"))
     project_id = (payload or {}).get("project_id") or projects.ensure_default()
+    connection_id = (payload or {}).get("connection_id") or ""
     _check_connector(connector)
-    if not skip_absorb and not config.GROQ_API_KEY:
-        raise HTTPException(409, "GROQ_API_KEY is not set — absorb is the only paid step")
-    if runs.live(connector):
-        raise HTTPException(409, f"{connector} already has a run in flight")
-
-    run_id = runs.start(connector)
-    args = [sys.executable, str(config.ROOT / "scripts" / "pipeline_run.py"),
-            "--connector", connector, "--run-id", run_id,
-            "--project-id", project_id]
-    if skip_absorb:
-        args.append("--skip-absorb")
-    # start_new_session detaches it from this server's process group, so a
-    # redeploy that stops the container's main process does not signal the run.
-    subprocess.Popen(args, cwd=str(config.ROOT), start_new_session=True,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return {"run_id": run_id}
+    if not skip_absorb:
+        _absorb_env_or_409()
+    return jobs.submit(connector, project_id, connection_id=connection_id, absorb=not skip_absorb,
+                       full=bool(payload.get('full', False)))
 
 
 @router.get("/runs")
@@ -161,7 +149,7 @@ def list_runs(project_id: str, connector: str | None = None, limit: int = 25,
     leaves it wherever it stopped, which reads as "wrote 3" with no way to see
     that 9 never started.
     """
-    rows = runs.recent(limit, connector)
+    rows = runs.recent(max(1, min(limit, 100)), connector, project_id)
     by_run = ingest_units.per_run(project_id, [r["id"] for r in rows])
     for r in rows:
         r["units"] = by_run.get(r["id"], {})
@@ -184,17 +172,37 @@ def get_log(run_id: str, after: int = 0, _email: str = Depends(current_user)):
 
 @router.post("/runs/{run_id}/stop")
 def stop_run(run_id: str, _email: str = Depends(current_user)):
-    row = runs.get(run_id)
-    if not row:
-        raise HTTPException(404, "no such run")
-    if row["status"] != "running":
-        raise HTTPException(409, f"run is {row['status']}, not running")
-    if not row["pid"]:
-        raise HTTPException(409, "run has not reported a pid yet")
     try:
-        os.kill(row["pid"], signal.SIGTERM)
-    except ProcessLookupError:
-        # Already gone. The stale heartbeat will render it interrupted; saying
-        # "stopped" here would claim a clean shutdown that did not happen.
-        raise HTTPException(409, "process is already gone")
-    return {"stopping": True}
+        return jobs.request_cancel(run_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+@router.post('/runs/{run_id}/retry', status_code=202)
+def retry_run(run_id: str, _email: str = Depends(current_user)):
+    try:
+        return jobs.retry(run_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+
+
+@router.get('/status')
+def pipeline_status(project_id: str, _email: str = Depends(current_user)):
+    summary = ingest_units.summary(project_id)
+    with connect() as c:
+        active = c.execute("SELECT id,connector_id,connection_id,status,phase,items_seen,items_written,started_at,heartbeat_at "
+                           "FROM brain_connector_runs WHERE project_id=%s AND status IN ('queued','running','cancelling') "
+                           'ORDER BY started_at', (project_id,)).fetchall()
+    try:
+        provider = llm.resolve()
+        current = {'provider': provider['preset'], 'model': provider['model'], 'local': provider['preset']=='ollama'}
+    except llm.NoProvider as e:
+        current = {'provider': None, 'model': None, 'local': False, 'error': str(e)}
+    return {'worker_running': jobs.worker_running(), 'active_runs': active,
+            'queue': {'queued': summary['pending'], 'running': summary['running'],
+                      'failed': summary['failed'], 'done': summary['done']},
+            'sources': sources.state_counts(project_id), 'provider': current}

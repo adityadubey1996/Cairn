@@ -48,6 +48,10 @@ from pathlib import Path
 from pypdf import PdfReader
 
 from feeders.google.auth import access_token
+from feeders.result import SyncResult, failure
+from feeders import options
+from pipeline.ingest import extract_binary
+from pipeline.source_files import source_path as resolve_source_path
 from server import config, sources as sources_index
 
 API = "https://www.googleapis.com/drive/v3"
@@ -82,7 +86,12 @@ _EXPORT_AS = {
     _SHEET_MIME: "text/csv",
     _SLIDES_MIME: "text/plain",
 }
-_TEXT_EXTS = (".txt", ".md", ".vtt", ".srt", ".pdf")
+_OFFICE_MIMES = {
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation": ".pptx",
+}
+_TEXT_EXTS = (".txt", ".md", ".vtt", ".srt", ".pdf", ".docx", ".xlsx", ".pptx")
 _FOLDER_MIME = "application/vnd.google-apps.folder"
 
 
@@ -158,7 +167,7 @@ def _norm(f: dict) -> dict:
 
 
 def _wanted(f: dict) -> bool:
-    return (f["mimeType"] in (_EXPORTABLE_MIME, _PDF_MIME)
+    return (f["mimeType"] in (_EXPORTABLE_MIME, _PDF_MIME, *_OFFICE_MIMES)
             or f["name"].lower().endswith(_TEXT_EXTS))
 
 
@@ -189,12 +198,19 @@ def _walk_folder(folder_id: str, modified_after: str) -> list[dict]:
     """Google's Meet folder gives every meeting its own subfolder, so a
     configured folder often holds no files directly. Shortcuts are not
     followed."""
-    out, queue = [], [folder_id]
+    out, queue, visited = [], [folder_id], set()
     while queue:
-        for f in _pages(f"'{queue.pop(0)}' in parents and trashed = false",
-                        modified_after):
-            (queue if f["mimeType"] == _FOLDER_MIME else out).append(
-                f["id"] if f["mimeType"] == _FOLDER_MIME else f)
+        current = queue.pop(0)
+        if current in visited:
+            continue
+        visited.add(current)
+        # A file update does not update its parent folder's modifiedTime.
+        # Walk every folder, applying the watermark only to leaf documents.
+        for f in _pages(f"'{current}' in parents and trashed = false"):
+            if f["mimeType"] == _FOLDER_MIME:
+                queue.append(f["id"])
+            elif not modified_after or f["modifiedTime"] > modified_after:
+                out.append(f)
     return out
 
 
@@ -211,7 +227,7 @@ _TRANSCRIPT_NAME_Q = "(" + " or ".join(
     f"name contains '{m}'" for m in _MEETING_MARKERS) + ")"
 
 
-def list_drive_files(modified_after: str = "") -> list[dict]:
+def list_drive_files(modified_after: str = "", source_ids: list[str] | None = None) -> list[dict]:
     """Default (GDRIVE_SOURCE_IDS empty): every text-like file the user owns,
     plus meeting transcripts anyone shared with them.
 
@@ -230,8 +246,9 @@ def list_drive_files(modified_after: str = "") -> list[dict]:
     applies to the default, unscoped listing.
     """
     found = []
-    if config.GDRIVE_SOURCE_IDS:
-        for source_id in config.GDRIVE_SOURCE_IDS:
+    selected_ids = config.GDRIVE_SOURCE_IDS if source_ids is None else source_ids
+    if selected_ids:
+        for source_id in selected_ids:
             meta = _get_json(f"{API}/files/{source_id}"
                              f"?fields={_FIELDS}&supportsAllDrives=true")
             if meta["mimeType"] == _FOLDER_MIME:
@@ -284,7 +301,7 @@ def _pdf_to_text(raw: bytes) -> str:
         text = ""
         if shutil.which("pdftotext"):
             out = subprocess.run(["pdftotext", "-layout", f.name, "-"],
-                                 capture_output=True, text=True)
+                                 capture_output=True, text=True, timeout=60)
             text = out.stdout.strip()
         if not text:
             pages = PdfReader(io.BytesIO(raw)).pages
@@ -295,9 +312,9 @@ def _pdf_to_text(raw: bytes) -> str:
         # will just be slow, not wrong. Add a cap if one ever blocks a sync.
         with tempfile.TemporaryDirectory() as d:
             subprocess.run(["pdftoppm", "-png", "-r", "200", f.name, f"{d}/p"],
-                           capture_output=True)
+                           capture_output=True, timeout=180)
             parts = [subprocess.run(["tesseract", str(png), "-"],
-                                    capture_output=True, text=True).stdout.strip()
+                                    capture_output=True, text=True, timeout=60).stdout.strip()
                      for png in sorted(Path(d).glob("p-*.png"))]
             return "\n\n".join(p for p in parts if p).strip()
 
@@ -313,7 +330,7 @@ def _source_type(file: dict) -> str:
     name = file["name"].lower()
     if name.endswith((".vtt", ".srt")) or any(m in name for m in _MEETING_MARKERS):
         return "meeting_transcript"
-    if file["mime_type"] == _PDF_MIME or name.endswith(".pdf"):
+    if file["mime_type"] == _PDF_MIME or name.endswith(".pdf") or file["mime_type"] in _OFFICE_MIMES or name.endswith(tuple(_OFFICE_MIMES.values())):
         return "binary_doc"
     return "doc"
 
@@ -355,6 +372,15 @@ def export_text(file: dict) -> str:
     name = file["name"].lower()
     if file["mime_type"] == _PDF_MIME or name.endswith(".pdf"):
         return _pdf_to_text(raw)
+    extension = _OFFICE_MIMES.get(file["mime_type"], Path(name).suffix)
+    if extension in _OFFICE_MIMES.values():
+        with tempfile.NamedTemporaryFile(suffix=extension) as temporary:
+            temporary.write(raw)
+            temporary.flush()
+            text, method = extract_binary(Path(temporary.name))
+        if not text.strip():
+            raise ValueError(f"no extractable text ({method})")
+        return text
     text = raw.decode("utf-8", errors="replace")
     if name.endswith((".vtt", ".srt")):
         text = _captions_to_prose(text)
@@ -379,7 +405,8 @@ def inventory(modified_after: str = "") -> dict:
 
 
 def run(modified_after: str = "", project_id: str | None = None,
-        on_progress=None, connection_id: str | None = None) -> tuple[int, int]:
+        on_progress=None, connection_id: str | None = None,
+        source_ids: list[str] | None = None, max_items: int = 0) -> SyncResult:
     """Returns (items_seen, items_written). Called by connectors.run_now().
 
     on_progress(done, total, label) fires once per file before it is fetched, so
@@ -389,24 +416,33 @@ def run(modified_after: str = "", project_id: str | None = None,
     produced it. Optional because a hand or cron run has no connection —
     those rows stay unattributed rather than being guessed at.
     """
+    max_items = options.max_items(max_items)
+    source_ids = options.source_ids(source_ids)
     if project_id is None:
         from server import projects
         project_id = projects.ensure_default()
-    files = list_drive_files(modified_after)
+    files = (list_drive_files(modified_after) if source_ids is None
+             else list_drive_files(modified_after, source_ids=source_ids))
+    truncated = bool(max_items and len(files) > max_items)
+    if max_items:
+        files = sorted(files, key=lambda f: f["modified_time"], reverse=True)[:max_items]
     # `path:` below stays repo-relative because that is what a citation must
     # resolve to; SOURCES_DIR defaults inside the repo, and pointing it outside
     # would break validate_wiki's "does this path exist here" check.
-    sources = config.SOURCES_DIR / "gdrive"
+    sources = resolve_source_path(config.GDRIVE_TARGET_REPO, "sources/gdrive")
     inbox = config.GDRIVE_TARGET_REPO / "raw" / "inbox"
     sources.mkdir(parents=True, exist_ok=True)
     inbox.mkdir(parents=True, exist_ok=True)
 
     written = 0
+    failures = []
     for n, f in enumerate(files, 1):
         if on_progress:
             on_progress(n, len(files), f.get("name") or f["id"])
         try:
             text = export_text(f)
+            if not text.strip():
+                raise ValueError("document has no extractable text")
         except Exception as e:
             log.exception("gdrive: failed to extract %r, skipping", f.get("id"))
             # The id is in hand here; it used to be logged and dropped, so a
@@ -415,44 +451,30 @@ def run(modified_after: str = "", project_id: str | None = None,
                 id=f"gdrive-{f['id']}", project_id=project_id, kind="gdrive",
                 name=f.get("name") or f["id"], reason=e,
                 connection_id=connection_id)
+            failures.append(failure(f"gdrive-{f['id']}", f.get("name") or f["id"], e))
             continue
-        if not text.strip():
-            continue  # no extractable text (scanned PDF, empty doc)
         sha = hashlib.sha1(text.encode()).hexdigest()[:8]
         slug = _source_slug(f)
         source_path = sources / f"{slug}.md"
-        # Renaming a file in Drive changes its slug, because _source_slug puts
-        # the name in the path while the source id stays the id. Without this
-        # the next sync writes a second file at the new path and abandons the
-        # old one — the corpus grows a copy per rename and the abandoned file
-        # is what existing citations still point at. Move it instead: one file
-        # per Drive file, and record() below repoints the row.
+        # Existing citations refer to the path, so a remote rename must never
+        # move it. The DB's display name is updated independently below.
         prior = sources_index.get(f"gdrive-{f['id']}")
-        if prior and prior.get("path") and prior["path"] != f"sources/gdrive/{slug}.md":
-            # `sources` is <root>/sources/gdrive, so two parents up is the repo
-            # root the stored path is relative to — independent of cwd.
-            old_path = sources.parent.parent / prior["path"]
-            if old_path.is_file() and not source_path.exists():
-                old_path.rename(source_path)
+        if prior and prior.get("path", "").startswith("sources/gdrive/"):
+            previous_path = resolve_source_path(config.GDRIVE_TARGET_REPO, prior["path"])
+            if previous_path.is_relative_to(sources.resolve()):
+                source_path = previous_path
+        source_rel = "sources/gdrive/" + source_path.relative_to(sources).as_posix()
         existing_sha = (hashlib.sha1(source_path.read_text().encode()).hexdigest()[:8]
                         if source_path.is_file() else None)
-        if existing_sha == sha:
-            # Unchanged since the last run, so nothing is refetched — but the
-            # connection that asked for it may not have been known when the row
-            # was first written.
-            sources_index.attribute(f"gdrive-{f['id']}", connection_id)
-            # Same reason as attribute(): the folder is newly known for every
-            # row written before this feeder asked Drive for `parents`, and an
-            # unchanged file never reaches record() to carry it.
-            sources_index.set_folder(f"gdrive-{f['id']}", f.get("folder"))
-            continue
-
-        source_path.write_text(text, encoding="utf-8")
+        inbox_path = inbox / f"gdrive-{f['id']}.md"
+        changed = existing_sha != sha or not inbox_path.is_file()
+        if existing_sha != sha:
+            source_path.write_text(text, encoding="utf-8")
         date, time = f["modified_time"].split("T", 1)
         entry = (
             "---\n"
             f'id: gdrive-{f["id"]}\n'
-            f"path: sources/gdrive/{slug}.md\n"  # repo-relative: the citation
+            f"path: {source_rel}\n"
 
             f"sha: {sha}\n"
             f"source_type: {_source_type(f)}\n"
@@ -464,11 +486,15 @@ def run(modified_after: str = "", project_id: str | None = None,
             + (text if text.lstrip().startswith("# ")
                else f"# {_title(f, text)}\n\n{text}") + "\n"
         )
-        (inbox / f"gdrive-{f['id']}.md").write_text(entry, encoding="utf-8")
+        if changed:
+            inbox_path.write_text(entry, encoding="utf-8")
         sources_index.record(
             id=f"gdrive-{f['id']}", project_id=project_id, kind="gdrive",
-            name=f["name"], path=f"sources/gdrive/{slug}.md",
+            name=f["name"], path=source_rel,
             size=len(text.encode()), sha=sha, authors=f.get("authors", []),
             folder=f.get("folder"), connection_id=connection_id)
-        written += 1
-    return len(files), written
+        written += int(changed)
+    if truncated:
+        failures.append(failure("gdrive-backlog", "More Drive documents remain",
+                                "Sync reached max_items; increase the limit or narrow source_ids"))
+    return SyncResult(len(files), written, failures)

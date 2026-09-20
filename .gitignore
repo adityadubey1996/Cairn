@@ -16,12 +16,17 @@ web2/dist/
 secrets/
 
 # Wiki pipeline scratch: entries/queue are derived and disposable, regenerated
-# by ingest. sources/ and wiki/ ARE committed.
+# by ingest.
 raw/
 
-# Generated wikis ARE the artifact and are committed — no ignore rule for them
-# on purpose. Clones are not: they live under var/ (already ignored) and are
-# rebuilt by cloning.
+# A running personal KB writes private source material and generated knowledge
+# here when no external data directory is configured. Keep it out of the code
+# repository by default. Deployments must back it up separately; users who
+# deliberately version a knowledge tree can force-add it in their private repo.
+sources/
+wiki/
+wikis/*
+!wikis/README.md
 
 # macOS noise.
 .DS_Store
@@ -34,3 +39,10 @@ graphify-out/
 
 # Brainstorming visual-companion scratch (mockups shown in-browser during design)
 .superpowers/
+
+# Local planning docs — kept on this machine, never published.
+docs/
+PRODUCT.md
+DESIGN.md
+# Local editor/agent config.
+.claude/

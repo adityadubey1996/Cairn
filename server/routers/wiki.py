@@ -14,7 +14,6 @@ from .. import config, corpus, index, ingest_units, sources
 from ..application.assemble import _scan
 from ..application.synthesize import _citations
 from ..auth import current_user
-from ..gitmeta import github_slug_and_ref
 from ..wikilib import ARTICLE_CITE, fm_field, frontmatter, parse_grades
 
 router = APIRouter(prefix="/api/wiki")
@@ -123,9 +122,10 @@ def article(repo: str, path: str, project_id: str | None = None,
 
         text = p.read_text(encoding="utf-8", errors="replace")
         fm, body = frontmatter(text)
-        head = index.head_of(root)
-        resolved = github_slug_and_ref(
-            root.parent, head if head and head not in ("?",) else None)
+        metadata = corpus.provenance(root, text)
+        head = metadata['head']
+        resolved = ((metadata['github'], metadata['ref'])
+                    if metadata.get('github') and metadata.get('ref') else None)
 
         # Inline citations: an article's own body cites [grade: path@sha],
         # unlike a chat answer's bare [path@sha] — both match the same
@@ -133,7 +133,7 @@ def article(repo: str, path: str, project_id: str | None = None,
         # actually keys on.
         raw_citations = _citations(body, context=[{
             "root": root, "rel": path,
-            "title": fm_field(fm, "title") or p.stem, "text": body}])
+            "title": fm_field(fm, "title") or p.stem, "text": text}])
         fed = sources.get_by_paths([c["path"] for c in raw_citations
                                     if c["path"].startswith("sources/")])
         web_citations, by_key = [], {}

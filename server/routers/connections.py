@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, UploadFile
 
-from .. import connections
+from .. import connections, automation
 from ..auth import current_user
 
 router = APIRouter(prefix="/api/connections")
@@ -51,6 +51,24 @@ def sync_connection(connection_id: str, full: bool = False,
         return connections.sync(connection_id, full=full)
     except Exception as e:
         _fail(e)
+
+
+@router.get("/{connection_id:path}/policy")
+def get_policy(connection_id: str, _email: str = Depends(current_user)):
+    try:
+        return automation.get(connection_id)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+
+
+@router.patch("/{connection_id:path}/policy")
+def save_policy(connection_id: str, payload: dict = Body(...), _email: str = Depends(current_user)):
+    try:
+        return automation.save(connection_id, payload)
+    except KeyError as e:
+        raise HTTPException(404, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
 
 
 @router.delete("/{connection_id:path}", status_code=204)

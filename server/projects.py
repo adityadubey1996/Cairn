@@ -99,3 +99,14 @@ def ensure_default() -> str:
             "INSERT INTO brain_projects (id, name) VALUES ('default', 'My first project') "
             "ON CONFLICT (id) DO UPDATE SET name = brain_projects.name "
             "RETURNING id").fetchone()["id"]
+
+
+def wiki_root(project_id: str):
+    from . import config
+    if project_id == ensure_default() and config.WIKI_ROOTS:
+        return config.WIKI_ROOTS[0]
+    # Database IDs are validated by lookup; hash also makes filesystem isolation
+    # independent of any future change to the project ID format.
+    import hashlib
+    key = hashlib.sha256(project_id.encode()).hexdigest()[:16]
+    return config.REPO_WIKI_DIR / 'projects' / key / 'wiki'

@@ -103,21 +103,22 @@ def test_write_entry_writes_source_and_calls_record():
         assert (target_repo / "sources" / "upload" / f"{upload.upload_slug('proj-1', 'notes/hello.md')}.md").is_file()
 
 
-def test_write_entry_is_a_noop_when_content_is_unchanged():
+def test_unchanged_upload_preserves_file_and_repairs_index():
     with tempfile.TemporaryDirectory() as tmp, \
-         patch.object(upload.sources_index, "record") as record, \
-         patch.object(upload.sources_index, "attribute") as attribute, \
-         patch.object(upload.sources_index, "set_folder") as set_folder:
+         patch.object(upload.sources_index, "record") as record:
         target_repo = Path(tmp)
         upload.write_entry(target_repo, "notes/hello.md", "doc", "# Hello",
                            project_id="proj-1", connection_id="upload-x")
+        source = target_repo / "sources/upload" / f"{upload.upload_slug('proj-1', 'notes/hello.md')}.md"
+        modified = source.stat().st_mtime_ns
         record.reset_mock()
         written_again = upload.write_entry(target_repo, "notes/hello.md", "doc", "# Hello",
                                            project_id="proj-1", connection_id="upload-x")
+        assert source.stat().st_mtime_ns == modified
     assert written_again is False, "identical content must not rewrite"
-    record.assert_not_called()
-    attribute.assert_called_once_with(upload.upload_id("proj-1", "notes/hello.md"), "upload-x")
-    set_folder.assert_called_once_with(upload.upload_id("proj-1", "notes/hello.md"), "notes")
+    record.assert_called_once()
+    assert record.call_args.kwargs["connection_id"] == "upload-x"
+    assert record.call_args.kwargs["folder"] == "notes"
 
 
 def test_write_entry_stores_data_files_as_raw_bytes_with_a_preview_inbox_body():
@@ -147,15 +148,16 @@ def test_run_processes_every_staged_file_and_cleans_up():
              patch.object(upload.sources_index, "record_failure",
                           side_effect=lambda **kw: seen.append(kw["id"])):
             cfg.GDRIVE_TARGET_REPO = target_repo
-            seen_count, written = upload.run(project_id="proj-1", connection_id="upload-x",
-                                             on_progress=lambda d, t, label: None)
+            result = upload.run(project_id="proj-1", connection_id="upload-x",
+                                on_progress=lambda d, t, label: None)
+            seen_count, written = result
 
         assert seen_count == 2, seen_count
         assert written == 1, written
         assert seen == [upload.upload_id("proj-1", "b.exe")]
-        # run() only unlinks files, never the now-empty directories left behind —
-        # harmless under a gitignored raw/ tree, so this checks files, not paths.
-        assert not any(p.is_file() for p in staged.rglob("*")), "processed files must be removed from staging"
+        assert result.failed == 1 and not result.complete
+        assert not (staged / "notes/a.md").exists(), "successful files leave staging"
+        assert (staged / "b.exe").read_bytes() == b"\x00", "failed originals must remain available for retry"
 
 
 def test_write_entry_keeps_the_original_beside_the_extracted_text():
@@ -188,6 +190,26 @@ def test_write_entry_records_no_original_when_none_was_kept():
         upload.write_entry(Path(tmp), "notes/hello.md", "doc", "# Hello",
                            project_id="proj-1", connection_id="upload-x")
     assert calls[0]["original_path"] is None, "a .md is its own original"
+
+
+def test_original_only_revision_updates_download_without_requeueing(tmp_path, monkeypatch):
+    monkeypatch.setattr(upload.sources_index, "record", lambda **_: None)
+    original = tmp_path / "report.pdf"
+    original.write_bytes(b"original layout")
+    upload.write_entry(tmp_path, "report.pdf", "binary_doc", "same text",
+                       project_id="project", original=original)
+    slug = upload.upload_slug("project", "report.pdf")
+    source = tmp_path / "sources/upload" / f"{slug}.md"
+    inbox = tmp_path / "raw/inbox" / f"{upload.upload_id('project', 'report.pdf')}.md"
+    modified = (source.stat().st_mtime_ns, inbox.stat().st_mtime_ns)
+    original.write_bytes(b"revised layout")
+
+    changed = upload.write_entry(tmp_path, "report.pdf", "binary_doc", "same text",
+                                 project_id="project", original=original)
+
+    assert not changed
+    assert (tmp_path / "sources/upload/originals" / f"{slug}.pdf").read_bytes() == b"revised layout"
+    assert (source.stat().st_mtime_ns, inbox.stat().st_mtime_ns) == modified
 
 
 def test_unchanged_content_still_self_heals_a_missing_original():

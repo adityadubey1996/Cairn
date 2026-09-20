@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 import secrets
+import hashlib
+import json
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,16 +24,27 @@ from starlette.requests import Request
 
 from .. import connections, connectors, projects
 from ..auth import current_user
+from ..db import connect
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 
-# ponytail: one pending consent per provider, single uvicorn worker — the same
-# constraint the repo job registry lives under. Two people connecting the same
-# provider at once would clobber each other; move to Postgres if this ever runs
-# multi-worker or multi-user.
-_pending: dict[str, dict] = {}
+# Short-lived, single-use state survives an app restart during user consent.
+def _save_state(provider: str, state: str, payload: dict) -> None:
+    with connect() as c:
+        c.execute('DELETE FROM brain_oauth_states WHERE expires_at < now()')
+        c.execute("INSERT INTO brain_oauth_states(state_hash,provider,payload,expires_at) "
+                  "VALUES (%s,%s,%s,now()+interval '15 minutes')",
+                  (hashlib.sha256(state.encode()).hexdigest(), provider, json.dumps(payload)))
+
+
+def _consume_state(provider: str, state: str) -> dict | None:
+    with connect() as c:
+        row = c.execute('DELETE FROM brain_oauth_states WHERE state_hash=%s AND provider=%s '
+                        'AND expires_at > now() RETURNING payload',
+                        (hashlib.sha256(state.encode()).hexdigest(), provider)).fetchone()
+    return row['payload'] if row else None
 
 
 def _spec(provider: str) -> connectors.OAuthSpec:
@@ -63,6 +76,7 @@ def _redirect_uri(request: Request, provider: str) -> str:
 
 @router.get("/{provider}/authorize")
 def authorize(provider: str, request: Request, project_id: str = "", kind: str = "",
+              max_items: int = 0,
               _email: str = Depends(current_user)):
     spec = _spec(provider)
     if not spec.ready():
@@ -73,7 +87,9 @@ def authorize(provider: str, request: Request, project_id: str = "", kind: str =
     state = secrets.token_urlsafe(24)
     # The project and the kind both have to survive the trip to the provider and
     # back, and `state` already exists to prove the trip started here.
-    _pending[provider] = {"state": state, "project_id": project_id, "kind": kind}
+    if not 0 <= max_items <= 10000:
+        raise HTTPException(400, 'max_items must be between 0 and 10000')
+    _save_state(provider, state, {"project_id": project_id, "kind": kind, 'max_items': max_items})
     return RedirectResponse(spec.consent_url(_redirect_uri(request, provider), state),
                             status_code=302)
 
@@ -84,10 +100,10 @@ def callback(provider: str, request: Request, code: str = "", state: str = "",
     """No auth dependency: this is the provider redirecting the browser back.
     The `state` check is what proves the round trip started here."""
     spec = _spec(provider)
-    pending = _pending.pop(provider, None)
+    pending = _consume_state(provider, state) if state else None
     if error:
         return RedirectResponse(f"/?connect_error={quote(error)}", status_code=302)
-    if not code or not state or not pending or state != pending["state"]:
+    if not code or not state or not pending:
         return RedirectResponse("/?connect_error=bad_state", status_code=302)
     try:
         spec.exchange(code, _redirect_uri(request, provider))
@@ -103,7 +119,7 @@ def callback(provider: str, request: Request, code: str = "", state: str = "",
     if kind in covered:
         try:
             connections.create(pending["project_id"] or projects.ensure_default(),
-                               kind, covered[kind])
+                               kind, covered[kind], {'max_items': pending.get('max_items', 0)})
         except Exception:
             log.exception("%s: token saved but the connection row failed", provider)
     # Never echo the token — a redirect is the whole response.

@@ -1,6 +1,6 @@
 # Cairn — the whole stack, locally.
 #
-#   docker compose up -d --build     # brain on :8300, plus db, S3 emulation
+#   docker compose up -d --build     # brain on :8301, plus db, S3 emulation
 #   docker compose up -d db          # just Postgres, if you run the server yourself
 #   docker compose up -d steel-api   # add this only for WhatsApp / LinkedIn
 #   docker compose logs -f brain
@@ -110,6 +110,9 @@ services:
       DEV_UI: ${DEV_UI:-}
       GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
       GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      GOOGLE_ACCOUNT_EMAIL: ${GOOGLE_ACCOUNT_EMAIL:-}
+      GOOGLE_TOKEN_FILE: /app/secrets/google-oauth.json
+      GMAIL_QUERY: ${GMAIL_QUERY:-}
       ALLOWED_DOMAIN: ${ALLOWED_DOMAIN:-}
       SESSION_SECRET: ${SESSION_SECRET:-change-me}
 
@@ -140,6 +143,9 @@ services:
       - brain2-sources:/data/sources
       - brain2-clones:/data/clones
       - brain2-var:/app/var
+      - brain2-wiki:/app/wiki
+      - brain2-raw:/app/raw
+      - ./secrets:/app/secrets
     ports:
       # Distinct from V1's 8300, so both can run at once.
       - "${V2_PORT:-8301}:8300"
@@ -171,4 +177,6 @@ volumes:
   brain2-wikis:
   brain2-clones:
   brain2-var:
+  brain2-wiki:
+  brain2-raw:
   brain2-steel-cache:

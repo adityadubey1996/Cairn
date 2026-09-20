@@ -29,6 +29,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+try:
+    from .source_files import content_version, source_path
+except ImportError:
+    from source_files import content_version, source_path
+
 REQUIRED_KEYS = {"title", "type", "created", "last_updated", "stale", "grades",
                  "sources", "related"}
 
@@ -140,7 +145,9 @@ def article_titles(wiki: Path) -> set[str]:
 
 
 def validate(path: Path, repo: Path, titles: set[str], graph_files: set[str] | None,
-             anchor: bool) -> Report:
+             anchor: bool, allowed_citations: set[str] | None = None,
+             require_grades: bool = False, minimum_lines: int = MIN_LINES,
+             allowed_grades: set[str] | None = None) -> Report:
     r = Report(path)
     text = path.read_text(encoding="utf-8", errors="replace")
     fm, body = frontmatter(text)
@@ -170,15 +177,38 @@ def validate(path: Path, repo: Path, titles: set[str], graph_files: set[str] | N
     # be trusted. gap and conflict are exempt: gap has no source by definition,
     # conflict carries two and is checked through CITE below.
     for kind, payload in tags:
+        if allowed_grades is not None and kind not in allowed_grades:
+            r.error('unsupported grade', f'[{kind}] is not supported by the supplied source types')
         if kind in ("verified", "code", "doc") and not CITE.search(payload or ""):
             r.error("citation", f"[{kind}] without path@sha: {(payload or '')[:60]}")
+    if require_grades:
+        if not any(counts[kind] for kind in ("verified", "code", "doc", "conflict")):
+            r.error("grades", "no source-supported claims to publish")
+        prose = re.sub(r"```.*?```", "", body, flags=re.S)
+        prose = re.sub(r"<!--.*?-->", "", prose, flags=re.S)
+        for paragraph in re.split(r"\n\s*\n", prose):
+            lines = [line for line in paragraph.splitlines()
+                     if line.strip() and not re.match(r"^\s*(#{1,6}\s|[-*_]{3,}\s*$)", line)]
+            # List rows are separate claims even when Markdown puts them in one
+            # paragraph. A citation on the last item cannot cover preceding ones.
+            claims = lines if lines and all(re.match(r"^\s*(?:[-*+] |\d+[.)] )", s) for s in lines) else [" ".join(lines)]
+            for claim in claims:
+                if re.search(r"[A-Za-z]", claim) and not GRADE.search(claim):
+                    r.error("ungraded claim", claim.strip()[:100])
 
     # dedupe: one file cited eight times is one problem, not eight
     for cited_path, sha in sorted(set(CITE.findall(text))):
-        if not (repo / cited_path).exists():
+        if allowed_citations is not None and f"{cited_path}@{sha}" not in allowed_citations:
+            r.error("unseen source", f"{cited_path}@{sha} was not supplied to the writer")
+        try:
+            local = source_path(repo, cited_path)
+        except ValueError:
+            r.error("cited path", f"{cited_path} is outside the source root")
+            continue
+        if not local.exists():
             r.error("cited path", f"{cited_path} does not exist")
             continue
-        real = (source_etag(cited_path) if cited_path.startswith("sources/")
+        real = (content_version(local) if cited_path.startswith("sources/")
                 else git_blob_sha(repo, cited_path))
         if real is None and not cited_path.startswith("sources/"):
             r.error("stale sha", f"{cited_path}@{sha} — git cannot resolve this "
@@ -211,8 +241,8 @@ def validate(path: Path, repo: Path, titles: set[str], graph_files: set[str] | N
 
     lines = len(body.strip().splitlines())
     lo, hi = LENGTH.get(atype, (MIN_LINES, 150))
-    if lines < MIN_LINES:
-        r.error("length", f"{lines} lines — below the {MIN_LINES}-line minimum")
+    if lines < minimum_lines:
+        r.error("length", f"{lines} lines — below the {minimum_lines}-line minimum")
     elif not (lo <= lines <= hi):
         r.warn("length", f"{lines} lines, target {lo}-{hi} for type '{atype}'")
 
@@ -242,8 +272,9 @@ def validate(path: Path, repo: Path, titles: set[str], graph_files: set[str] | N
             paths = [p for p, _ in CITE.findall(para)]
             if not syms or not paths:
                 continue
-            blobs = "\n".join((repo / p).read_text(errors="replace")
-                              for p in paths if (repo / p).exists())
+            blobs = "\n".join(source_path(repo, p).read_text(errors="replace")
+                              for p in paths if ".." not in Path(p).parts
+                              and not Path(p).is_absolute() and source_path(repo, p).is_file())
             if orphan := {s for s in syms if s not in blobs}:
                 r.warn("anchor", f"symbols not found in cited files: "
                                  f"{', '.join(sorted(orphan))[:80]}")

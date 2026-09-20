@@ -19,6 +19,7 @@ import re
 from datetime import date, datetime, timedelta
 
 from server import config, sources as sources_index
+from feeders.result import SyncResult, failure
 from feeders.browser import sessions
 from feeders.browser.sessions import _cdp_evaluate, _navigate
 
@@ -141,20 +142,17 @@ def write_days(title: str, url: str, thread_id: str, msgs: list[dict],
             f'time: "{dmsgs[-1]["time"]}:00"\n'
             f"authors: [{', '.join(json.dumps(a) for a in authors)}]\n"
             "---\n\n" + text + "\n")
-        indexed = False
         if existing == sha:
             # unchanged → keep the source, but self-heal a missing inbox entry
             # so a never-changing thread-day can't fall out of the pipeline.
             if not inbox_path.is_file():
                 inbox_path.write_text(entry, encoding="utf-8")
                 written += 1
-                indexed = True
         else:
             source_path.write_text(text, encoding="utf-8")
             inbox_path.write_text(entry, encoding="utf-8")
             written += 1
-            indexed = True
-        if indexed and project_id:
+        if project_id:
             sources_index.record(
                 id=f"linkedin-{slug}", project_id=project_id, kind="linkedin",
                 name=f"{title} — {day}", path=f"sources/linkedin/{slug}.md",
@@ -193,6 +191,7 @@ async def _run(project_id: str | None = None, on_progress=None,
     sources = config.SOURCES_DIR / "linkedin"
     inbox = config.GDRIVE_TARGET_REPO / "raw" / "inbox"
     seen = written = 0
+    failures = []
     threads = config.LINKEDIN_THREADS
     for n, url in enumerate(threads, 1):
         if on_progress:
@@ -219,10 +218,11 @@ async def _run(project_id: str | None = None, on_progress=None,
             seen += len({m["day"] for m in msgs})
             written += write_days(title, url, _thread_id(url), msgs, sources, inbox,
                                   project_id, connection_id)
-        except Exception:
+        except Exception as e:
             log.exception("linkedin %r: crashed, skipping", url)
+            failures.append(failure(f"linkedin-{_thread_id(url)}", url, e))
             continue
-    return seen, written
+    return SyncResult(seen, written, failures)
 
 
 def run(project_id: str | None = None, on_progress=None,

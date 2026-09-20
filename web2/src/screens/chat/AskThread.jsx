@@ -6,7 +6,7 @@ import { TrustLine } from '@/components/TrustLine'
 import { AnswerBody } from './AnswerBody'
 import { LiveActivity } from './LiveActivity'
 
-export function AskThread({ state, messages, pending, starters, projectName, onStarter, onRetry }) {
+export function AskThread({ state, messages, pending, starters, projectName, onStarter, onRetry, onGoFiles }) {
   if (state === 'loading') return <div className="pt-6"><SkeletonList rows={4} icon={false} /></div>
 
   if (state === 'error') {
@@ -23,17 +23,24 @@ export function AskThread({ state, messages, pending, starters, projectName, onS
     return (
       <EmptyState
         icon={MessageSquare}
-        title="Ask about anything you’ve connected. Answers come only from graded articles, with citations."
+        className="pt-14"
+        titleClassName="max-w-lg text-xl font-semibold"
+        detailClassName="max-w-md text-[13px]"
+        title="Make sense of your knowledge."
+        detail="Ask across the files you have absorbed. Cairn reads relevant wiki articles and links its answer to the source evidence."
         action={
-          <div className="mt-1 flex flex-wrap justify-center gap-1.5">
+          <div className="mt-3 flex max-w-xl flex-col items-center gap-3">
+          <div className="flex flex-wrap justify-center gap-2">
             {starters.map((s) => (
               <button
                 key={s} type="button" onClick={() => onStarter?.(s)}
-                className="rounded-full border border-border bg-card px-3 py-1 text-xs text-foreground hover:border-primary"
+                className="rounded-lg border border-border bg-card px-3 py-2 text-left text-[13px] text-foreground hover:border-primary"
               >
                 {s}
               </button>
             ))}
+          </div>
+          <Button variant="ghost" size="sm" onClick={onGoFiles}>Review files and absorption status</Button>
           </div>
         }
       />
@@ -41,11 +48,11 @@ export function AskThread({ state, messages, pending, starters, projectName, onS
   }
 
   return (
-    <div className="flex flex-col gap-6 py-6">
+    <div className="flex flex-col gap-7 py-6" aria-live="polite" aria-busy={!!pending}>
       {messages.map((m) => (
         <div key={m.id} className={m.role === 'user' ? 'flex flex-col items-end gap-2' : 'flex flex-col gap-2'}>
           {m.role === 'user' ? (
-            <div className="max-w-[80%] rounded-xl bg-[var(--user)] px-3.5 py-2.5 whitespace-pre-wrap">{m.text}</div>
+            <div className="max-w-[90%] rounded-xl bg-[var(--user)] px-4 py-3 text-[15px] whitespace-pre-wrap sm:max-w-[80%]">{m.text}</div>
           ) : (
             <>
               {m.process && <LiveActivity stage={m.process} done />}

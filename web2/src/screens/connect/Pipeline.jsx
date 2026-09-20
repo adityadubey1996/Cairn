@@ -1,369 +1,268 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { usePipelineRun } from '@/lib/usePipelineRun'
-import { ChevronDown, ChevronRight, Play, RotateCcw, Square, TriangleAlert } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Check, ChevronDown, ChevronRight, Clock3, Pause, Play, RefreshCw, RotateCcw, Settings2, Square, TriangleAlert } from 'lucide-react'
 import * as api from '@/api'
 import { cn } from '@/lib/utils'
 import { ago } from '@/lib/format'
+import { usePipelineRun } from '@/lib/usePipelineRun'
 import { Button } from '@/components/ui/button'
+import { ConnectorIcon } from '@/components/ConnectorIcon'
+import { SkeletonList } from '@/components/SkeletonList'
+import { Progress } from '@/components/ui/progress'
 
-// Only the two Google feeders have a phased runner behind them. The rest sync
-// through /api/connections and show up under Health instead.
-const CONNECTORS = [
-  { id: 'gdrive', name: 'Google Drive' },
-  { id: 'gchat', name: 'Google Chat' },
-]
+const ACTIVE = new Set(['queued', 'running', 'cancelling'])
+const fieldClass = 'w-full rounded-md border border-border bg-background px-2.5 py-2 text-[13px] outline-none focus:border-primary'
+const dateLabel = (value) => value ? new Date(value).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' }) : 'Not scheduled'
+const defaultTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata'
 
-function duration(seconds) {
-  if (!seconds) return '—'
-  const h = Math.floor(seconds / 3600)
-  const m = Math.floor((seconds % 3600) / 60)
-  return h ? `${h}h ${m}m` : m ? `${m}m` : `${Math.round(seconds)}s`
-}
-
-const compact = (n) => (n ?? 0).toLocaleString()
-
-function Phases({ phases }) {
-  const keys = Object.keys(phases || {})
-  if (!keys.length) return null
-  return (
-    <table className="mt-3 w-full text-[12.5px]">
-      <thead className="text-muted-foreground">
-        <tr className="text-left">
-          <th className="pb-1 font-medium">phase</th>
-          <th className="pb-1 font-medium">in</th>
-          <th className="pb-1 font-medium">out</th>
-          <th className="pb-1 font-medium">tokens</th>
-          <th className="pb-1 font-medium">time</th>
-        </tr>
-      </thead>
-      <tbody>
-        {keys.map((k) => {
-          const p = phases[k]
-          const tok = (p.tokens_in || 0) + (p.tokens_out || 0)
-          return (
-            <tr key={k} className="border-t border-border/60">
-              <td className="py-1">{k}</td>
-              <td className="py-1">{p.seen ?? p.queued ?? '—'}</td>
-              <td className="py-1">{p.written ?? p.files ?? '—'}</td>
-              <td className="py-1">{tok ? compact(tok) : '—'}</td>
-              <td className="py-1">{duration(p.seconds)}</td>
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
-  )
-}
-
-function Log({ lines }) {
-  const box = useRef(null)
-  useEffect(() => { box.current?.scrollTo(0, box.current.scrollHeight) }, [lines])
-  if (!lines.length) return null
-  return (
-    <pre
-      ref={box}
-      className="mt-3 max-h-72 overflow-y-auto rounded-md bg-muted/40 p-2.5 font-mono text-[11.5px] leading-relaxed text-muted-foreground"
-    >
-      {lines.map((l) => l.line).join('\n')}
-    </pre>
-  )
-}
-
-function Runner({ connector, allowPaid }) {
-  const [est, setEst] = useState(null)
-  const [runId, setRunId] = useState(null)
-  const [startError, setStartError] = useState(null)
-
-  const loadEstimate = useCallback(() => {
-    api.pipelineEstimate(connector.id).then(setEst).catch(() => setEst(null))
-  }, [connector.id])
-
-  useEffect(loadEstimate, [loadEstimate])
-
-  // The estimate is stale the moment a run finishes — it counts what is still
-  // queued — so refetch it then rather than leaving the old number up.
-  const { run, lines, error: pollError, running, pct } =
-    usePipelineRun(runId, { onFinish: loadEstimate })
-  const error = startError || pollError
-
-  async function start(skipAbsorb) {
-    setStartError(null)
-    try {
-      const { run_id } = await api.startPipelineRun(connector.id, { skipAbsorb })
-      setRunId(run_id)
-    } catch (e) { setStartError(String(e.message || e)) }
-  }
-
-  async function stop() {
-    try { await api.stopPipelineRun(runId) }
-    catch (e) { setStartError(String(e.message || e)) }
-  }
-
-  return (
-    <div className="rounded-lg border border-border bg-card/40 p-3.5">
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-[13px] font-medium">{connector.name}</span>
-        {running && (
-          <span className="text-[12px] text-muted-foreground">
-            {run.phase ?? run.status} · {run.items_written}/{run.items_seen} ({pct}%)
-          </span>
-        )}
-      </div>
-
-      {!running && est && (
-        <p className="mt-1 text-[12.5px] text-muted-foreground">
-          {compact(est.queued)} queued · ~{compact(est.tokens)} tokens · ~{duration(est.seconds)}
-          {!est.measured && ' (estimate, no run measured yet)'}
-        </p>
-      )}
-
-      {run && !running && run.status !== 'ok' && (
-        <p className="mt-1 text-[12.5px] text-muted-foreground">run {run.status}</p>
-      )}
-
-      <Phases phases={run?.phases} />
-
-      {(error || run?.error) && (
-        <p className="mt-2 flex items-start gap-1.5 text-[12.5px] text-destructive">
-          <TriangleAlert size={14} className="mt-[2px] shrink-0" aria-hidden />
-          <span>{error || run.error}</span>
-        </p>
-      )}
-
-      <Log lines={lines} />
-
-      <div className="mt-3 flex gap-2">
-        {running ? (
-          <Button variant="outline" size="sm" onClick={stop}>
-            <Square size={13} aria-hidden /> Stop
-          </Button>
-        ) : (
-          <>
-            <Button size="sm" onClick={() => start(true)}>
-              <Play size={13} aria-hidden /> Scrape only · free
-            </Button>
-            {/* The only control here that spends money, so it is the only one
-                still behind DEV_UI. Watching a free scrape is not a developer
-                feature. */}
-            {allowPaid && (
-              <Button variant="outline" size="sm" onClick={() => start(false)}>
-                Write up · paid
-              </Button>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// Free is the primary action: scrape and ingest cost nothing, and the write-up
-// is the only phase that spends money — so the paid button is the secondary one
-// here, the reverse of how a "refresh" usually reads.
-// The four states a file can be in, in the order they happen. "In progress"
-// is the one that did not exist before: a run that died used to leave no trace
-// of the unit it was working on.
-const STATES = [
-  { key: 'done', label: 'Done', tone: 'text-success' },
-  { key: 'running', label: 'In progress', tone: 'text-primary' },
-  { key: 'pending', label: 'Not started', tone: 'text-muted-foreground' },
-  { key: 'failed', label: 'Failed', tone: 'text-destructive' },
-]
-
-function UnitStates({ projectId }) {
-  const [summary, setSummary] = useState(null)
-  const [rows, setRows] = useState([])
-  const [filter, setFilter] = useState(null)
+function ConnectionAutomation({ connection, onRun }) {
+  const [policy, setPolicy] = useState(null)
+  const [draft, setDraft] = useState(null)
+  const [schedule, setSchedule] = useState('manual')
+  const [editing, setEditing] = useState(false)
+  const editingRef = useRef(false)
+  editingRef.current = editing
   const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [saved, setSaved] = useState(false)
   const [reload, setReload] = useState(0)
 
+  const adopt = (next, preserveDraft = false) => {
+    setPolicy(next)
+    if (preserveDraft) return
+    setDraft({ ...next, timezone: next.timezone || defaultTimezone })
+    setSchedule(!next.sync_enabled ? 'manual' : next.cron_expression ? 'cron' : 'interval')
+  }
   useEffect(() => {
-    let cancelled = false
-    api.ingestUnits({ projectId, state: filter })
-      .then((got) => {
-        if (cancelled) return
-        setSummary(got.summary)
-        setRows(got.rows)
+    let alive = true
+    api.connectionPolicy(connection.id).then((p) => { if (alive) adopt(p, editingRef.current) })
+      .catch((e) => { if (alive) setError(e.message) })
+    return () => { alive = false }
+  }, [connection.id, connection.lastSyncAt, reload])
+
+  const mutate = async (operation) => {
+    setBusy(true); setError(null); setSaved(false)
+    try { await operation() }
+    catch (e) { setError(e.message) }
+    finally { setBusy(false) }
+  }
+  const save = (e) => {
+    e.preventDefault()
+    mutate(async () => {
+      const next = await api.saveConnectionPolicy(connection.id, {
+        sync_enabled: schedule !== 'manual',
+        schedule_minutes: Number(draft.schedule_minutes || 60),
+        cron_expression: schedule === 'cron' ? draft.cron_expression?.trim() || ''
+          : schedule === 'manual' ? policy.cron_expression || '' : '',
+        timezone: draft.timezone,
+        auto_absorb: !!draft.auto_absorb,
       })
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [projectId, filter, reload])
+      adopt(next); setSaved(true); setEditing(false)
+    })
+  }
+  const runNow = () => mutate(async () => {
+    const result = await api.syncConnection(connection.id)
+    onRun(result.runId ?? result.run_id)
+  })
+  const toggle = () => mutate(async () => {
+    adopt(await api.saveConnectionPolicy(connection.id, { sync_enabled: !policy.sync_enabled }))
+  })
 
-  // While something is running the counts move on their own, so the panel has
-  // to as well — otherwise it reads as stuck.
+  const hasSchedule = !!(policy?.schedule_minutes || policy?.cron_expression)
+  return (
+    <section className="border-b border-border py-4 last:border-b-0">
+      <div className="flex flex-wrap items-start gap-3">
+        <ConnectorIcon kind={connection.kind} size={19} className="mt-1 text-muted-foreground" />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-sm font-semibold">{connection.name}</h3>
+          <p className="mt-1 text-xs text-muted-foreground">{connection.detail || connection.kind}</p>
+          {policy && <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+            <span className={policy.sync_enabled && hasSchedule ? 'text-primary' : 'text-muted-foreground'}>
+              {hasSchedule ? policy.sync_enabled ? policy.cron_expression ? `${policy.cron_expression} · ${policy.timezone}` : `Every ${policy.schedule_minutes} minutes` : 'Schedule paused' : 'Manual sync'}
+            </span>
+            <span className={policy.auto_absorb ? 'text-success' : 'text-muted-foreground'}>
+              {policy.auto_absorb ? 'New and changed files absorb automatically' : 'Review files before absorption'}
+            </span>
+          </div>}
+          {policy?.sync_enabled && hasSchedule && <p className="mt-1 text-[11px] text-muted-foreground">Next run: {dateLabel(policy.next_run_at)}</p>}
+          {(policy?.last_run_at || connection.lastSyncAt) && <p className="mt-1 text-[11px] text-muted-foreground">Last run: {ago(policy?.last_run_at || connection.lastSyncAt)}</p>}
+        </div>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {hasSchedule && <Button variant="ghost" size="sm" disabled={busy} onClick={toggle}>
+            {policy.sync_enabled ? <Pause size={12} aria-hidden /> : <Play size={12} aria-hidden />}
+            {policy.sync_enabled ? 'Pause' : 'Resume'}
+          </Button>}
+          <Button variant="outline" size="sm" disabled={busy || !policy} aria-expanded={editing} onClick={() => { setEditing((v) => !v); setSaved(false) }}>
+            <Settings2 size={12} aria-hidden /> Automation
+          </Button>
+          <Button variant="outline" size="sm" disabled={busy || ACTIVE.has(connection.status)} onClick={runNow}>
+            <Play size={12} aria-hidden /> {busy ? 'Working…' : 'Run now'}
+          </Button>
+        </div>
+      </div>
+      {!policy && !error && <p className="mt-2 text-xs text-muted-foreground">Loading automation policy…</p>}
+      {error && <div role="alert" className="mt-3 flex items-center gap-2 text-xs text-destructive">
+        <TriangleAlert size={13} aria-hidden />{error}
+        {!policy && <Button variant="ghost" size="xs" onClick={() => { setError(null); setReload((n) => n + 1) }}>Retry</Button>}
+      </div>}
+      {saved && <p role="status" className="mt-2 flex items-center gap-1.5 text-xs text-success"><Check size={12} aria-hidden /> Automation saved.</p>}
+      {editing && draft && <form onSubmit={save} className="mt-4 rounded-lg border border-border bg-card p-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">Sync schedule
+            <select className={fieldClass} value={schedule} onChange={(e) => setSchedule(e.target.value)}>
+              <option value="manual">Only when I run it</option>
+              <option value="interval">Every interval</option>
+              <option value="cron">Custom cron schedule</option>
+            </select>
+          </label>
+          {schedule === 'interval' && <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">Interval in minutes
+            <input type="number" min="1" max="43200" required className={fieldClass} value={draft.schedule_minutes || 60}
+              onChange={(e) => setDraft((d) => ({ ...d, schedule_minutes: e.target.value }))} />
+          </label>}
+          {schedule === 'cron' && <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">Cron expression
+            <input required className={`${fieldClass} font-mono`} placeholder="0 9 * * 1-5" value={draft.cron_expression || ''}
+              onChange={(e) => setDraft((d) => ({ ...d, cron_expression: e.target.value }))} />
+            <span className="text-[11px]">Minute, hour, day, month, weekday. Example: weekdays at 09:00.</span>
+          </label>}
+          {schedule !== 'manual' && <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">Timezone
+            <input required className={fieldClass} list="pipeline-timezones" value={draft.timezone}
+              onChange={(e) => setDraft((d) => ({ ...d, timezone: e.target.value }))} />
+          </label>}
+        </div>
+        <label className="mt-4 flex items-start gap-2.5 text-[13px]">
+          <input type="checkbox" checked={!!draft.auto_absorb} className="mt-1 size-4 accent-[var(--primary)]"
+            onChange={(e) => setDraft((d) => ({ ...d, auto_absorb: e.target.checked }))} />
+          <span>Automatically absorb new and changed files
+            <span className="mt-1 block max-w-2xl text-xs leading-relaxed text-muted-foreground">After a successful sync, the worker updates your wiki using the configured model. Files marked manual or excluded keep their own policy. Turn this off to review and queue files yourself.</span>
+          </span>
+        </label>
+        <div className="mt-4 flex items-center gap-2">
+          <Button type="submit" size="sm" disabled={busy}>{busy ? 'Saving…' : 'Save automation'}</Button>
+          <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => { adopt(policy); setEditing(false) }}>Cancel</Button>
+        </div>
+      </form>}
+    </section>
+  )
+}
+
+function RunDetail({ id, onFinish, onRun }) {
+  const { run, lines, error, running, pct } = usePipelineRun(id, { onFinish })
+  const [stopError, setStopError] = useState(null)
+  const [stopping, setStopping] = useState(false)
+  const stop = async () => {
+    setStopping(true); setStopError(null)
+    try { await api.stopPipelineRun(id) }
+    catch (e) { setStopError(e.message) }
+    finally { setStopping(false) }
+  }
+  const retry = async () => {
+    setStopping(true); setStopError(null)
+    try { const result = await api.retryPipelineRun(id); onRun(result.run_id ?? result.runId) }
+    catch (e) { setStopError(e.message) }
+    finally { setStopping(false) }
+  }
+  return <div className="pb-4 pl-6">
+    {running && <div className="mb-3 flex items-center gap-3">
+      <span className="text-xs text-muted-foreground">{run?.phase || 'Waiting to start'} · {run?.items_written ?? 0}/{run?.items_seen ?? 0} files</span>
+      <Button size="xs" variant="outline" disabled={stopping || run?.status === 'cancelling'} onClick={stop}><Square size={11} aria-hidden />{stopping || run?.status === 'cancelling' ? 'Stopping…' : 'Stop run'}</Button>
+    </div>}
+    {running && !!run?.items_seen && <Progress className="mb-3 max-w-md" value={pct} label="Run progress" />}
+    {(error || stopError || run?.error) && <p role="alert" className="mb-2 text-xs text-destructive">{stopError || error || run.error}</p>}
+    {!running && run && run.status !== 'ok' && <Button className="mb-3" variant="outline" size="xs" disabled={stopping} onClick={retry}>
+      <RotateCcw size={12} aria-hidden />{stopping ? 'Retrying…' : 'Retry run'}
+    </Button>}
+    <pre className="max-h-64 overflow-auto rounded-md border border-border bg-card p-3 font-mono text-[11px] leading-relaxed text-muted-foreground">{lines.length ? lines.map((line) => line.line).join('\n') : running ? 'Waiting for the worker to report progress…' : 'No log output for this run.'}</pre>
+  </div>
+}
+
+export function Pipeline({ projectId, onNavigate }) {
+  const [connections, setConnections] = useState([])
+  const [runs, setRuns] = useState([])
+  const [status, setStatus] = useState(null)
+  const [open, setOpen] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [reload, setReload] = useState(0)
+  const [busy, setBusy] = useState(false)
   useEffect(() => {
-    if (!summary?.running) return
-    const id = setInterval(() => setReload((n) => n + 1), 4000)
-    return () => clearInterval(id)
-  }, [summary?.running])
-
+    let alive = true
+    Promise.all([api.listConnections(projectId), api.pipelineRuns({ projectId }), api.pipelineStatus(projectId)])
+      .then(([cs, history, overview]) => {
+        if (!alive) return
+        setConnections(cs); setRuns(history.runs ?? []); setStatus(overview); setError(null)
+      })
+      .catch((e) => { if (alive) setError(e.message) })
+      .finally(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [projectId, reload])
+  useEffect(() => {
+    const timer = setInterval(() => setReload((n) => n + 1), 5000)
+    return () => clearInterval(timer)
+  }, [projectId])
+  const refresh = () => setReload((n) => n + 1)
+  const onRun = (id) => { if (id) setOpen(id); refresh() }
   const retry = async () => {
     setBusy(true)
-    try {
-      await api.retryUnits(projectId)
-      setReload((n) => n + 1)
-    } finally {
-      setBusy(false)
-    }
+    try { const result = await api.retryUnits(projectId); onRun(result.run_id ?? result.runId) }
+    catch (e) { setError(e.message) }
+    finally { setBusy(false) }
   }
+  const active = runs.filter((r) => ACTIVE.has(r.status))
+  const sourceCounts = status?.sources
+  const runLabel = { queued: 'Queued', running: 'Running', cancelling: 'Stopping', ok: 'Complete', partial: 'Partial', failed: 'Failed', error: 'Failed', stopped: 'Stopped', interrupted: 'Interrupted' }
 
-  if (!summary) return null
-
-  return (
-    <div className="rounded-[10px] border border-border bg-card p-3.5">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[13px] font-semibold">Files</span>
-        {STATES.map(({ key, label, tone }) => (
-          <button
-            key={key} type="button" aria-pressed={filter === key}
-            onClick={() => setFilter(filter === key ? null : key)}
-            className={cn(
-              'rounded-[9px] border px-2 py-px text-[11.5px] transition-colors',
-              filter === key ? 'border-primary' : 'border-border hover:border-primary/60',
-            )}
-          >
-            <span className={tone}>{(summary[key] ?? 0).toLocaleString()}</span> {label}
-          </button>
-        ))}
-        {summary.failed > 0 && (
-          <Button size="xs" variant="outline" className="ml-auto" disabled={busy}
-                  onClick={retry}>
-            <RotateCcw size={12} aria-hidden /> Retry {summary.failed} failed
-          </Button>
-        )}
-      </div>
-
-      {filter && (
-        <div className="mt-2.5 max-h-[320px] overflow-y-auto">
-          {rows.length === 0 && (
-            <p className="py-2 text-[12.5px] text-muted-foreground">
-              Nothing in this state.
-            </p>
-          )}
-          {rows.map((r) => (
-            <div key={r.unitId} className="flex items-start gap-2 border-b border-border/60 py-2">
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-[12.5px]">{r.name}</span>
-                {r.error && <span className="block text-[11.5px] text-destructive">{r.error}</span>}
-                {r.article && <span className="block text-[11.5px] text-muted-foreground">{r.article}</span>}
-              </span>
-              {r.attempts > 1 && (
-                <span className="shrink-0 text-[11px] text-muted-foreground">
-                  {r.attempts} attempts
-                </span>
-              )}
-            </div>
-          ))}
+  return <div className="mx-auto w-full max-w-5xl space-y-7">
+    <datalist id="pipeline-timezones"><option value="Asia/Kolkata" /><option value="UTC" /><option value="America/New_York" /><option value="Europe/London" /></datalist>
+    <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+      <span className={cn('inline-flex items-center gap-1.5', status?.worker_running ? 'text-success' : 'text-warning')}>
+        <span className="size-1.5 rounded-full bg-current" />{status ? status.worker_running ? 'Worker online' : 'Worker offline' : 'Checking worker…'}
+      </span>
+      <span>·</span><span>{active.length} active {active.length === 1 ? 'run' : 'runs'}</span>
+      {sourceCounts && <><span>·</span><span>{sourceCounts.queued ?? 0} queued files</span><span>·</span><span>{sourceCounts.absorbed ?? 0} absorbed</span></>}
+      {!!sourceCounts?.failed && <><span>·</span><span className="text-destructive">{sourceCounts.failed} failed files</span></>}
+      <Button variant="ghost" size="xs" className="ml-auto" onClick={refresh}><RefreshCw size={12} aria-hidden />Refresh</Button>
+    </div>
+    {error && <p role="alert" className="flex items-start gap-2 text-sm text-destructive"><TriangleAlert size={15} className="mt-0.5 shrink-0" aria-hidden />{error}</p>}
+    {loading ? <SkeletonList rows={5} /> : <>
+      <section>
+        <div className="flex flex-wrap items-baseline gap-2 border-b border-border pb-3">
+          <h2 className="text-[15px] font-semibold">Connector automation</h2>
+          <span className="text-xs text-muted-foreground">Schedules run while the Cairn server is running.</span>
         </div>
-      )}
-    </div>
-  )
-}
-
-// Every run ever started, with what each FILE ended up as — not the run's own
-// items_written, which is a live counter that stops wherever the process did.
-// A run that was killed reads as "wrote 3" there, with no way to see the 9 that
-// never started.
-function RunHistory({ projectId }) {
-  const [runs, setRuns] = useState(null)
-  const [open, setOpen] = useState(null)
-  const [log, setLog] = useState([])
-  const [reload, setReload] = useState(0)
-
-  useEffect(() => {
-    let cancelled = false
-    api.pipelineRuns({ projectId })
-      .then((got) => !cancelled && setRuns(got.runs))
-      .catch(() => !cancelled && setRuns([]))
-    return () => { cancelled = true }
-  }, [projectId, reload])
-
-  // A run still going keeps changing, so the list has to refresh itself or it
-  // reads as frozen.
-  const anyRunning = runs?.some((r) => r.status === 'running')
-  useEffect(() => {
-    if (!anyRunning) return
-    const id = setInterval(() => setReload((n) => n + 1), 5000)
-    return () => clearInterval(id)
-  }, [anyRunning])
-
-  useEffect(() => {
-    if (!open) { setLog([]); return }
-    let cancelled = false
-    api.pipelineRunLog(open, 0)
-      .then((got) => !cancelled && setLog(got.lines ?? []))
-      .catch(() => {})
-    return () => { cancelled = true }
-  }, [open])
-
-  if (!runs?.length) return null
-
-  return (
-    <div className="rounded-[10px] border border-border bg-card p-3.5">
-      <div className="pb-1.5 text-[13px] font-semibold">Run history</div>
-      {runs.map((r) => {
-        const u = r.units || {}
-        const isOpen = open === r.id
-        return (
-          <div key={r.id} className="border-t border-border/60 first:border-t-0">
-            <button
-              type="button" onClick={() => setOpen(isOpen ? null : r.id)}
-              className="flex w-full items-center gap-2 py-2 text-left"
-            >
-              {isOpen
-                ? <ChevronDown size={13} className="shrink-0 text-muted-foreground" aria-hidden />
-                : <ChevronRight size={13} className="shrink-0 text-muted-foreground" aria-hidden />}
-              <span className="text-[12.5px]">{r.connector_id}</span>
-              <span className={cn(
-                'rounded-[9px] border px-2 py-px text-[11px]',
-                r.status === 'ok' ? 'border-success/40 text-success'
-                  : r.status === 'running' ? 'border-primary/40 text-primary'
-                    : 'border-destructive/40 text-destructive',
-              )}>
-                {r.status}
+        {!connections.length && <div className="py-8">
+          <p className="text-sm">Connect your first source to create a schedule.</p>
+          <Button variant="outline" size="sm" className="mt-3" onClick={() => onNavigate?.('connect')}>Choose a connector</Button>
+        </div>}
+        {connections.map((c) => <ConnectionAutomation key={c.id} connection={c} onRun={onRun} />)}
+      </section>
+      <section>
+        <div className="flex items-center gap-3 border-b border-border pb-3">
+          <h2 className="text-[15px] font-semibold">Run history</h2>
+          <span className="text-xs text-muted-foreground">Live progress and logs</span>
+          {status?.queue?.failed > 0 && <Button variant="outline" size="xs" className="ml-auto" disabled={busy} onClick={retry}>
+            <RotateCcw size={12} aria-hidden />Requeue {status.queue.failed} failed
+          </Button>}
+        </div>
+        {!runs.length && <div className="flex items-start gap-3 py-7 text-muted-foreground">
+          <Clock3 size={18} aria-hidden /><p className="text-[13px]">No runs yet. Run a connector to see extraction, absorption, and errors here.</p>
+        </div>}
+        {runs.map((run) => {
+          const units = run.units || {}
+          const isOpen = open === run.id
+          const name = connections.find((c) => c.id === run.connection_id)?.name ?? run.connector_id
+          return <div key={run.id} className="border-b border-border/70">
+            <button className="flex w-full flex-wrap items-center gap-2 py-3 text-left" type="button" aria-expanded={isOpen} onClick={() => setOpen(isOpen ? null : run.id)}>
+              {isOpen ? <ChevronDown size={13} aria-hidden /> : <ChevronRight size={13} aria-hidden />}
+              <span className="text-[13px] font-medium">{name || 'Wiki absorption'}</span>
+              <span className={cn('rounded-md px-1.5 py-px text-[11px]', run.status === 'ok' ? 'bg-success/10 text-success' : ACTIVE.has(run.status) ? 'bg-primary/10 text-primary' : 'bg-warning/10 text-warning')}>
+                {runLabel[run.status] || run.status}
               </span>
-              {/* The per-file breakdown, which is the question "how many went
-                  down, how many are pending" actually being answered. */}
-              <span className="flex flex-wrap gap-2 text-[11.5px] text-muted-foreground">
-                {u.done ? <span className="text-success">{u.done} done</span> : null}
-                {u.running ? <span className="text-primary">{u.running} running</span> : null}
-                {u.pending ? <span>{u.pending} not started</span> : null}
-                {u.failed ? <span className="text-destructive">{u.failed} failed</span> : null}
-                {!u.done && !u.running && !u.pending && !u.failed
-                  ? <span>{r.items_written ?? 0}/{r.items_seen ?? 0}</span> : null}
-              </span>
-              <span className="ml-auto shrink-0 text-[11.5px] text-muted-foreground">
-                {ago(r.started_at)}
-              </span>
+              <span className="text-xs text-muted-foreground">{run.phase || ''}{units.done ? ` · ${units.done} absorbed` : ''}{units.failed ? ` · ${units.failed} failed` : ''}{units.pending ? ` · ${units.pending} pending` : ''}</span>
+              <span className="ml-auto text-[11px] text-muted-foreground">{ago(run.started_at)}</span>
             </button>
-            {isOpen && (
-              <div className="pb-2 pl-5">
-                {r.error && (
-                  <p className="mb-1.5 text-[11.5px] text-destructive">{r.error}</p>
-                )}
-                <pre className="max-h-[220px] overflow-auto rounded-md border border-border bg-background p-2 font-mono text-[11px] leading-relaxed text-muted-foreground">
-                  {log.length ? log.map((l) => l.line).join('\n') : 'no log lines'}
-                </pre>
-              </div>
-            )}
+            {isOpen && <RunDetail id={run.id} onFinish={refresh} onRun={onRun} />}
           </div>
-        )
-      })}
-    </div>
-  )
-}
-
-export function Pipeline({ projectId, allowPaid = false }) {
-  return (
-    <div className="flex flex-col gap-3">
-      <p className="text-[12.5px] text-muted-foreground">
-        Scrape, ingest and write up Drive and Chat. Writing up costs money and can
-        run for hours; a run survives a server restart. To write up a chosen set of
-        files instead of a whole connector, tick them on the Sources tab.
-      </p>
-      <UnitStates projectId={projectId} />
-      {CONNECTORS.map((c) => <Runner key={c.id} connector={c} allowPaid={allowPaid} />)}
-      <RunHistory projectId={projectId} />
-    </div>
-  )
+        })}
+      </section>
+    </>}
+  </div>
 }
