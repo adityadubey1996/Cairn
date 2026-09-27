@@ -27,6 +27,19 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
+  /* DESIGN.md's three sizes, as tokens. Everything in the app is one of
+     these: xs for meta and labels, sm for controls and data, base for reading
+     text, xl for a page title. Tailwind's own 12/14/16 would have shifted the
+     whole workspace's density, so the scale is pinned to the shipped values. */
+  --text-xs: 11.5px;
+  --text-xs--line-height: 1.45;
+  --text-sm: 13px;
+  --text-sm--line-height: 1.5;
+  --text-base: 15px;
+  --text-base--line-height: 1.55;
+  --text-xl: 20px;
+  --text-xl--line-height: 1.3;
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -35,6 +48,11 @@
 
 :root {
   --radius: 0.625rem;
+  /* Two widths, used everywhere. Dashboards and lists stop at --page-width so
+     rows do not stretch across a 32" monitor; anything read as prose stops at
+     --reading-width, which DESIGN.md puts near 72 characters. */
+  --page-width: 1280px;
+  --reading-width: 72ch;
   --background: #08090b;   /* Ink */
   --foreground: #c4c8d1;   /* Paper */
   --card: #101115;         /* Charcoal */
@@ -58,6 +76,19 @@
   --user: #1e2735;         /* Slate Navy — the user's own bubble */
 }
 
+/* Keyboard focus, for the whole app. Unlayered on purpose: every shadcn
+   control carries Tailwind's `outline-none`, and a utility beats @layer base
+   whatever its specificity. Inside the base layer this rule was dead on every
+   Button and Textarea — :focus-visible matched and outline-style still
+   computed to `none`, so keyboard focus was invisible across most of the
+   product. Unlayered CSS outranks every layer, which is what makes one ring
+   hold everywhere. */
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
 @layer base {
   * { box-sizing: border-box; margin: 0; scrollbar-width: thin; scrollbar-color: #262b36 transparent; }
   *::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -71,7 +102,6 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  :focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
   .chat-answer { max-width: 72ch; font-size: 15px; line-height: 1.8; overflow-wrap: anywhere; }
   .chat-answer p { margin-block: 0.8em; }
   .chat-answer li { margin-block: 0.3em; }

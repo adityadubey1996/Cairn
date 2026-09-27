@@ -88,6 +88,13 @@ REPO_WIKI_DIR = Path(os.environ.get("REPO_WIKI_DIR", ROOT / "wikis")).expanduser
 # Private repos on a server: no working trees, no SSH agent, so a token is the
 # only way in. Fine-grained PAT or GitHub App installation token, Contents:read.
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+# Git hosts a browser may ask the server to clone from. This is a trust
+# boundary, not a convenience: an unlisted host is a request to open a
+# connection from inside the network, so the list is closed and the default is
+# the four public hosts. Add a self-hosted instance here deliberately.
+REPO_ALLOWED_HOSTS = [h.strip().lower() for h in os.environ.get(
+    "REPO_ALLOWED_HOSTS",
+    "github.com,gitlab.com,bitbucket.org,codeberg.org").split(",") if h.strip()]
 
 # Optional S3 backing for the wiki tree. Unset = no-op; the filesystem (and git)
 # remain the store. S3_PREFIX is the environment separator — one bucket with

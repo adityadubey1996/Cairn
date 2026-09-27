@@ -20,6 +20,14 @@ def list_connectors(_email: str = Depends(current_user)):
     return connectors.health()
 
 
+@router.get("/catalogue")
+def catalogue(_email: str = Depends(current_user)):
+    """Each listed connector and the fields its Connect form must ask for.
+    Declared before the /{connector_id} routes so "catalogue" is never read as
+    a connector id."""
+    return connectors.catalogue()
+
+
 @router.get("/preflight")
 def preflight(_email: str = Depends(current_user)):
     """What each connector still needs on THIS machine. Declared before the

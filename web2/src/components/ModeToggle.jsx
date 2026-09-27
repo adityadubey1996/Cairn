@@ -26,7 +26,7 @@ export function ModeToggle({ value = 'search', onChange, className }) {
             title={hint}
             onClick={() => onChange?.(id)}
             className={cn(
-              'flex items-center gap-1.5 rounded-full px-4 py-1 text-[12.5px] transition-colors',
+              'flex items-center gap-1.5 rounded-full px-4 py-1 text-sm transition-colors',
               active
                 ? 'bg-primary font-semibold text-primary-foreground'
                 : 'text-muted-foreground hover:text-foreground',

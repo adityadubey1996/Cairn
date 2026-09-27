@@ -57,7 +57,7 @@ export function SearchPane({ state, query, rows, starters, onStarter, onAskInste
   return (
     <>
       <div className="flex items-center justify-between py-2">
-        <span className="text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+        <span className="text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
           {rows.length} match{rows.length === 1 ? '' : 'es'} · no LLM cost
         </span>
       </div>

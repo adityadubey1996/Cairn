@@ -40,8 +40,13 @@ graphify-out/
 # Brainstorming visual-companion scratch (mockups shown in-browser during design)
 .superpowers/
 
-# Local planning docs — kept on this machine, never published.
-docs/
+# Local scratch docs stay out; the connector roadmap ships with the repo.
+# (Contents, not the directory: git cannot re-include a file whose parent
+# directory is excluded.)
+docs/*
+!docs/plans/
+docs/plans/*
+!docs/plans/connector-program.md
 PRODUCT.md
 DESIGN.md
 # Local editor/agent config.

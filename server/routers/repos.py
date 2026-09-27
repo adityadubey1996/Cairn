@@ -58,17 +58,6 @@ def list_repos(project_id: str | None = None, _email: str = Depends(current_user
             "max_tracked": config.REPO_MAX_TRACKED}
 
 
-@router.get("/{owner}/{name}")
-def get_repo(owner: str, name: str, _email: str = Depends(current_user)):
-    rid = f"{owner}/{name}".lower()
-    row = repos.get(rid)
-    if not row:
-        raise HTTPException(404, f"no such repo: {rid}")
-    row["running_step"] = repos.busy().get(rid)
-    row["runs"] = repos.runs(rid, 10)
-    return row
-
-
 @router.post("/check")
 def check(payload: dict = Body(...), _email: str = Depends(current_user)):
     """Reachability probe. Never clones — this is what confirms a repo is public
@@ -83,8 +72,8 @@ def check(payload: dict = Body(...), _email: str = Depends(current_user)):
 def sweep(bg: BackgroundTasks, project_id: str | None = None, _email: str = Depends(current_user)):
     """Pull and re-ingest every tracked repo. Free — never absorbs.
 
-    Declared before the /{owner}/{name} routes so "sweep" is not read as an
-    owner. It is the same function the scheduled timer calls.
+    Declared before the /{repo_id:path} routes so "sweep" is not read as a
+    repo id. It is the same function the scheduled timer calls.
     """
     results = [jobs.submit('github', r['project_id'], connection_id=r['id']) for r in repos.list_repos()
                if not project_id or r['project_id'] == project_id]
@@ -105,36 +94,36 @@ def add_repo(payload: dict = Body(...), _email: str = Depends(current_user)):
         _fail(e)
 
 
-@router.delete("/{owner}/{name}")
-def delete_repo(owner: str, name: str, keep_wiki: bool = True,
+@router.delete("/{repo_id:path}")
+def delete_repo(repo_id: str, keep_wiki: bool = True,
                 _email: str = Depends(current_user)):
     try:
-        return repos.remove(f"{owner}/{name}".lower(), keep_wiki=keep_wiki)
+        return repos.remove(repo_id.lower(), keep_wiki=keep_wiki)
     except Exception as e:
         _fail(e)
 
 
-@router.get("/{owner}/{name}/commits")
-def list_commits(owner: str, name: str, limit: int = 50,
+@router.get("/{repo_id:path}/commits")
+def list_commits(repo_id: str, limit: int = 50,
                  _email: str = Depends(current_user)):
     try:
-        return {"commits": repos.commits(f"{owner}/{name}".lower(), limit)}
+        return {"commits": repos.commits(repo_id.lower(), limit)}
     except Exception as e:
         _fail(e)
 
 
-@router.get("/{owner}/{name}/queue")
-def get_queue(owner: str, name: str, _email: str = Depends(current_user)):
+@router.get("/{repo_id:path}/queue")
+def get_queue(repo_id: str, _email: str = Depends(current_user)):
     try:
-        return repos.queue(f"{owner}/{name}".lower())
+        return repos.queue(repo_id.lower())
     except Exception as e:
         _fail(e)
 
 
-@router.get("/{owner}/{name}/runs")
-def list_runs(owner: str, name: str, limit: int = 20,
+@router.get("/{repo_id:path}/runs")
+def list_runs(repo_id: str, limit: int = 20,
               _email: str = Depends(current_user)):
-    return {"runs": repos.runs(f"{owner}/{name}".lower(), limit)}
+    return {"runs": repos.runs(repo_id.lower(), limit)}
 
 
 def _spawn(bg: BackgroundTasks, rid: str, step: str, **kwargs):
@@ -149,20 +138,20 @@ def _spawn(bg: BackgroundTasks, rid: str, step: str, **kwargs):
             'status': result['status']}
 
 
-@router.post("/{owner}/{name}/clone", status_code=202)
-def clone(owner: str, name: str, bg: BackgroundTasks,
+@router.post("/{repo_id:path}/clone", status_code=202)
+def clone(repo_id: str, bg: BackgroundTasks,
           _email: str = Depends(current_user)):
-    return _spawn(bg, f"{owner}/{name}".lower(), "clone")
+    return _spawn(bg, repo_id.lower(), "clone")
 
 
-@router.post("/{owner}/{name}/graph", status_code=202)
-def graph(owner: str, name: str, bg: BackgroundTasks,
+@router.post("/{repo_id:path}/graph", status_code=202)
+def graph(repo_id: str, bg: BackgroundTasks,
           _email: str = Depends(current_user)):
-    return _spawn(bg, f"{owner}/{name}".lower(), "graph")
+    return _spawn(bg, repo_id.lower(), "graph")
 
 
-@router.post("/{owner}/{name}/ingest", status_code=202)
-def ingest(owner: str, name: str, bg: BackgroundTasks,
+@router.post("/{repo_id:path}/ingest", status_code=202)
+def ingest(repo_id: str, bg: BackgroundTasks,
            payload: dict = Body(default={}), _email: str = Depends(current_user)):
     commit = (payload or {}).get("commit")
     if commit:
@@ -170,11 +159,11 @@ def ingest(owner: str, name: str, bg: BackgroundTasks,
             repos.check_sha(commit)
         except repos.Invalid as e:
             raise HTTPException(400, str(e))
-    return _spawn(bg, f"{owner}/{name}".lower(), "ingest", commit=commit)
+    return _spawn(bg, repo_id.lower(), "ingest", commit=commit)
 
 
-@router.post("/{owner}/{name}/absorb", status_code=202)
-def absorb(owner: str, name: str, bg: BackgroundTasks,
+@router.post("/{repo_id:path}/absorb", status_code=202)
+def absorb(repo_id: str, bg: BackgroundTasks,
            payload: dict = Body(default={}), _email: str = Depends(current_user)):
     try:
         from .. import llm
@@ -192,16 +181,31 @@ def absorb(owner: str, name: str, bg: BackgroundTasks,
         raise HTTPException(400, 'only must contain valid unit IDs')
     if p.get('since') is not None and (type(p['since']) is not int or p['since'] < 1):
         raise HTTPException(400, 'since must be a positive commit count')
-    return _spawn(bg, f"{owner}/{name}".lower(), "absorb",
+    return _spawn(bg, repo_id.lower(), "absorb",
                   limit=int(p.get("limit", 5)), only=p.get("only"),
                   kind=p.get("kind", ""),
                   since=int(p["since"]) if p.get("since") else None)
 
 
-@router.post("/{owner}/{name}/sync", status_code=202)
-def sync(owner: str, name: str, bg: BackgroundTasks,
+@router.post("/{repo_id:path}/sync", status_code=202)
+def sync(repo_id: str, bg: BackgroundTasks,
          _email: str = Depends(current_user)):
     """clone → graph → ingest. Stops before absorb, deliberately: the free path
     should be one button, and the paid one should never be implicit."""
-    rid = f"{owner}/{name}".lower()
+    rid = repo_id.lower()
     return _spawn(bg, rid, 'sync')
+
+
+# Last on purpose. `{repo_id:path}` is greedy, so declared any earlier it would
+# swallow ".../commits", ".../queue" and ".../runs" and answer 404 for all
+# three. The path converter is what lets a nested GitLab id — four segments,
+# not two — address a repo at all.
+@router.get("/{repo_id:path}")
+def get_repo(repo_id: str, _email: str = Depends(current_user)):
+    rid = repo_id.lower()
+    row = repos.get(rid)
+    if not row:
+        raise HTTPException(404, f"no such repo: {rid}")
+    row["running_step"] = repos.busy().get(rid)
+    row["runs"] = repos.runs(rid, 10)
+    return row

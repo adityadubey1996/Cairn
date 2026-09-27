@@ -92,7 +92,7 @@ export function AddFiles({ projectId, onStaged, className }) {
     >
       <div className="flex items-start gap-2.5">
         <Upload size={15} className="mt-px shrink-0 text-muted-foreground" aria-hidden />
-        <span className="text-[13px] text-muted-foreground">
+        <span className="text-sm text-muted-foreground">
           Drop files here, or pick them. Word, PowerPoint, PDF, Excel, CSV and plain text are read;
           anything else is listed as not read.
         </span>
@@ -119,7 +119,7 @@ export function AddFiles({ projectId, onStaged, className }) {
 
       {busy && (
         <div className="flex flex-col gap-1.5">
-          <div className="flex items-center gap-2 text-[13px] text-muted-foreground">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
             {/* No byte total until the first progress event lands, and a 0% bar
                 would read as stalled — so the spinner covers exactly that gap,
                 and the bar takes over after it. */}
@@ -136,7 +136,7 @@ export function AddFiles({ projectId, onStaged, className }) {
         </div>
       )}
 
-      {error && <div className="text-[12px] text-destructive">{error}</div>}
+      {error && <div className="text-xs text-destructive">{error}</div>}
     </div>
   )
 }

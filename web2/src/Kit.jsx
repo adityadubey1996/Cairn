@@ -23,8 +23,8 @@ function Cell({ name, used, wide = false, children }) {
   return (
     <section className={`flex flex-col gap-2.5 rounded-[10px] border border-border bg-card p-3.5 ${wide ? 'md:col-span-2' : ''}`}>
       <header>
-        <h2 className="text-[12.5px] font-semibold">{name}</h2>
-        <p className="text-[11px] leading-snug text-muted-foreground">{used}</p>
+        <h2 className="text-sm font-semibold">{name}</h2>
+        <p className="text-xs leading-snug text-muted-foreground">{used}</p>
       </header>
       <div className="flex flex-1 flex-col justify-center gap-2.5 rounded-lg border border-border bg-background p-3">
         {children}
@@ -67,7 +67,7 @@ export function Kit() {
   return (
     <div className="h-screen overflow-y-auto p-7">
       <h1 className="text-lg font-semibold">Component kit</h1>
-      <p className="mb-5 max-w-[640px] text-[13px] leading-relaxed text-muted-foreground">
+      <p className="mb-5 max-w-[640px] text-sm leading-relaxed text-muted-foreground">
         Every component the V2 screens are composed from. Built once here so the screens in later
         batches stay consistent — status is only ever green, amber, red or neutral, and Dusk Blue
         is spent on interactive signal alone.
@@ -76,7 +76,7 @@ export function Kit() {
       <div className="grid gap-3.5 md:grid-cols-2 xl:grid-cols-3">
         <Cell name="StatusDot" used="ConnectorCard · Timeline rows">
           {['ok', 'running', 'error', 'never_run'].map((s) => (
-            <div key={s} className="flex items-center gap-2.5 text-[12.5px] text-muted-foreground">
+            <div key={s} className="flex items-center gap-2.5 text-sm text-muted-foreground">
               <StatusDot status={s} />
               <span className="text-foreground">{s}</span>
             </div>
@@ -93,9 +93,9 @@ export function Kit() {
 
         <Cell name="CitationChip" used="Chat answers · Wiki article body. Variant comes from the source type.">
           <CitationChip label="absorb.py@3f9c1a2" type="file" />
-          <span className="text-[11px] text-muted-foreground">file — opens the cited version</span>
+          <span className="text-xs text-muted-foreground">file — opens the cited version</span>
           <CitationChip label="pricing (anthropic.com)" type="link" href="https://www.anthropic.com/pricing" />
-          <span className="text-[11px] text-muted-foreground">link — dashed edge, opens the real URL</span>
+          <span className="text-xs text-muted-foreground">link — dashed edge, opens the real URL</span>
         </Cell>
 
         <Cell name="SourceRow" used="Connect › Sources · the Wiki reader's sources panel" wide>
@@ -115,7 +115,7 @@ export function Kit() {
 
         <Cell name="ModeToggle" used="Chat composer — used exactly once in the product.">
           <ModeToggle value={mode} onChange={setMode} />
-          <span className="text-[11px] text-muted-foreground">active: {mode}</span>
+          <span className="text-xs text-muted-foreground">active: {mode}</span>
         </Cell>
 
         <Cell name="ProjectSelector" used="Global shell. No 'All projects' option — projects are hard-isolated.">

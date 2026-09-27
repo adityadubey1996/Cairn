@@ -54,12 +54,70 @@ def _gauth():
     return auth
 
 
+def _drive_kinds() -> tuple[str, ...]:
+    """The Drive file kinds, read from the feeder that defines them. Empty when
+    the feeder will not import, so the form offers nothing rather than lying."""
+    try:
+        return tuple(_feeder("feeders.gdrive.sync").FILE_KINDS)
+    except Exception:
+        return ()
+
+
+def _feeder(module: str):
+    """Lazily, for the same reason `module` below is a string: an optional
+    dependency that is not installed must not break the app at import time."""
+    return importlib.import_module(module)
+
+
 GOOGLE_OAUTH = OAuthSpec(
     provider="google",
     consent_url=lambda redirect_uri, state: _gauth().consent_url(redirect_uri, state),
     exchange=lambda code, redirect_uri: _gauth().exchange_code(code, redirect_uri),
     ready=lambda: bool(config.GOOGLE_CLIENT_ID and config.GOOGLE_CLIENT_SECRET),
 )
+
+
+@dataclass(frozen=True)
+class Field:
+    """One input a connection asks its user for. `secret` fields are stored by
+    server/credentials.py and never land in brain_connector_connections.config,
+    the row every connection card is built from."""
+    name: str
+    label: str
+    secret: bool = False
+    required: bool = True
+    placeholder: str = ""
+
+
+@dataclass(frozen=True)
+class ScopeSpec:
+    """What a connection is allowed to read, and how to find out the choices.
+
+    Declared by the connector so the Connect screen needs no per-provider
+    branch: `options(settings)` returns the groups to tick, and the feeder
+    reads the saved answer back out of its own settings. A connector without
+    one syncs everything it can reach, which is what all of them did before.
+
+    `options` is called with the connection's live settings (config plus
+    secrets) and returns
+      [{"id", "name", "note", "items": [{"id", "name", "detail", "count"}]}]
+    `fields` are the extra filters beyond the item list — issue types, file
+    kinds — each a Choice the UI renders and validate() checks against.
+    """
+    kind: str                       # what an item IS: "project" | "folder" | "space"
+    options: Callable[[dict], list[dict]]
+    fields: tuple = ()
+    note: str = ""
+
+
+@dataclass(frozen=True)
+class Choice:
+    """One scope filter that is not the item list itself."""
+    name: str
+    label: str
+    values: tuple[str, ...] = ()    # empty = free integer (a day window)
+    default: tuple[str, ...] = ()
+    multiple: bool = True
 
 
 @dataclass
@@ -78,6 +136,12 @@ class Connector:
     # cannot drift from the code that actually reads them.
     requires: tuple[str, ...] = ()
     setup: str = ""
+    # How a connection signs in, and what the Connect form must ask for.
+    # Declared here so a new connector needs no UI or connections.py edit.
+    auth: str = "none"  # oauth | token | browser | none
+    fields: tuple[Field, ...] = ()
+    # What this connection may read. None = everything it can reach.
+    scope: ScopeSpec | None = None
 
 
 REGISTRY: list[Connector] = [
@@ -91,6 +155,20 @@ REGISTRY: list[Connector] = [
         oauth=GOOGLE_OAUTH,
         requires=("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"),
         setup="Create a Google Cloud OAuth client (Web application), add http://localhost:8300/api/google/callback as a redirect URI, enable the Drive API, then click Connect to give consent.",
+        auth="oauth",
+        # Folders, not files: a folder that gains a document tomorrow is still
+        # inside the scope that was agreed to. The kinds come from _wanted() in
+        # the feeder, so nothing unreadable is ever offered.
+        scope=ScopeSpec(
+            kind="folder",
+            options=lambda settings: _feeder("feeders.gdrive.sync").list_folders(settings),
+            note="Pick folders rather than your whole Drive. Subfolders follow their parent.",
+            fields=(Choice("file_kinds", "File kinds",
+                           tuple(_feeder("feeders.gdrive.sync").FILE_KINDS)
+                           if _drive_kinds() else (),
+                           _drive_kinds()),
+                    Choice("modified_within_days", "Modified within")),
+        ),
     ),
     Connector(
         id="links",
@@ -112,6 +190,15 @@ REGISTRY: list[Connector] = [
         oauth=GOOGLE_OAUTH,
         requires=("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"),
         setup="Same Google OAuth client as Drive — one consent covers both. Also enable the Google Chat API on the project.",
+        auth="oauth",
+        # One wiki entry per space per day, so a space you tick becomes a
+        # running transcript. Meeting spaces are their own group for that
+        # reason — there are usually far more of them and they say far less.
+        scope=ScopeSpec(
+            kind="space",
+            options=lambda settings: _feeder("feeders.chat.sync").list_space_options(settings),
+            note="Group chats and direct messages are never listed — Google excludes them before Cairn sees them.",
+        ),
     ),
     Connector(
         id="gmail",
@@ -123,6 +210,7 @@ REGISTRY: list[Connector] = [
         oauth=GOOGLE_OAUTH,
         requires=("GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"),
         setup="Enable the Gmail API in your Google Cloud project, then Connect to grant read-only mail access. Existing Drive/Chat connections need one new consent for Gmail.",
+        auth="oauth",
     ),
     Connector(
         id="whatsapp",
@@ -133,6 +221,7 @@ REGISTRY: list[Connector] = [
         module="feeders.whatsapp.sync",
         requires=("WHATSAPP_GROUPS",),
         setup="Run Steel (docker compose up -d steel-api), set WHATSAPP_GROUPS to the exact chat titles from WhatsApp Web's sidebar, then scan the QR in the login panel.",
+        auth="browser",
     ),
     Connector(
         id="linkedin",
@@ -143,6 +232,7 @@ REGISTRY: list[Connector] = [
         module="feeders.linkedin.sync",
         requires=("LINKEDIN_THREADS",),
         setup="Run Steel (docker compose up -d steel-api), set LINKEDIN_THREADS to thread URLs, then sign in once in the login panel.",
+        auth="browser",
     ),
     Connector(
         id="github",
@@ -158,6 +248,7 @@ REGISTRY: list[Connector] = [
         listed=False,
         requires=(),
         setup="Nothing for public repos. A private repo needs GITHUB_TOKEN — a fine-grained PAT with Contents: read-only.",
+        auth="token",
     ),
     Connector(
         id="upload",
@@ -170,6 +261,59 @@ REGISTRY: list[Connector] = [
         setup="No credentials. Drag files in from the Connect screen.",
     ),
 ]
+
+
+def _discovered() -> list[Connector]:
+    """Every connector that ships as a self-contained folder.
+
+    A folder becomes a connector by exporting SPEC from feeders/<name>/connector.py.
+    Nothing above it is edited: no list here, no route in app.py, no UI change.
+    That is what lets connectors be built in parallel without touching shared
+    files. Folders starting with _ are skipped (templates, shared helpers).
+
+    A broken folder is logged and skipped rather than taking the server down
+    with it — one unfinished connector must not stop the other nine.
+    """
+    found: list[Connector] = []
+    feeders_dir = config.ROOT / "feeders"
+    for path in sorted(feeders_dir.glob("*/connector.py")):
+        name = path.parent.name
+        if name.startswith("_"):
+            continue
+        try:
+            spec = importlib.import_module(f"feeders.{name}.connector").SPEC
+        except Exception:
+            log.exception("connector %s failed to load; skipping it", name)
+            continue
+        if not isinstance(spec, Connector):
+            log.error("feeders.%s.connector.SPEC is not a Connector; skipping", name)
+            continue
+        found.append(spec)
+    return found
+
+
+REGISTRY += _discovered()
+
+
+def routers() -> list:
+    """Each connector folder's own API router, if it has one.
+
+    A connector that needs its own endpoints (an extra consent step, a picker,
+    a settings call) ships feeders/<name>/router.py exporting `router`, and the
+    app mounts it. Same reason as _discovered(): no shared file to edit.
+    """
+    out = []
+    for spec in REGISTRY:
+        name = spec.module.split(".")[1] if spec.module.startswith("feeders.") else ""
+        if not name:
+            continue
+        try:
+            out.append(importlib.import_module(f"feeders.{name}.router").router)
+        except ModuleNotFoundError:
+            continue
+        except Exception:
+            log.exception("connector %s has a router that failed to load", name)
+    return out
 
 
 def ensure_rows() -> None:
@@ -212,6 +356,20 @@ def health() -> list[dict]:
             } if last else None,
         })
     return out
+
+
+def catalogue() -> list[dict]:
+    """What the Connect screen needs to render a connector's own form.
+
+    A connector declares its fields here; the UI renders whatever it declares.
+    That is what lets a new connector ship without a UI change.
+    """
+    return [{"id": c.id, "name": c.name, "kind": c.kind, "auth": c.auth,
+             "description": c.description, "setup": c.setup,
+             "fields": [{"name": f.name, "label": f.label, "secret": f.secret,
+                         "required": f.required, "placeholder": f.placeholder}
+                        for f in c.fields]}
+            for c in REGISTRY if c.listed]
 
 
 def preflight() -> list[dict]:

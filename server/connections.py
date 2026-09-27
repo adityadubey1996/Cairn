@@ -18,13 +18,23 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, pipeline_runs, repos, automation, jobs
+from . import automation, config, credentials, jobs, pipeline_runs, repos
+from .connectors import REGISTRY
 from .db import connect
 from feeders.upload import sync as upload_sync
 
-NON_GITHUB_KINDS = ("gdrive", "gchat", "gmail", "links", "whatsapp", "linkedin", "upload")
-AUTH_OF_KIND = {"gdrive": "oauth", "gchat": "oauth", "gmail": "oauth", "links": "none",
-                "whatsapp": "browser", "linkedin": "browser", "upload": "none"}
+# Derived, never listed: a connector is declared once, in connectors.REGISTRY.
+NON_GITHUB_KINDS = tuple(c.id for c in REGISTRY if c.id != "github")
+AUTH_OF_KIND = {c.id: c.auth for c in REGISTRY}
+
+
+def _spec(kind: str):
+    """Looked up per call, not at import, so the registry stays the single
+    source of truth for what a connection may be."""
+    spec = next((c for c in REGISTRY if c.id == kind and c.id != "github"), None)
+    if not spec:
+        raise Invalid(f"unknown connector kind: {kind!r}")
+    return spec
 
 
 class Invalid(ValueError):
@@ -125,8 +135,7 @@ def list_connections(project_id: str) -> list[dict]:
 
 
 def create(project_id: str, kind: str, name: str, config: dict | None = None) -> dict:
-    if kind not in NON_GITHUB_KINDS:
-        raise Invalid(f"unknown connector kind: {kind!r}")
+    spec = _spec(kind)
     if not name or not name.strip():
         raise Invalid("name is required")
     if not project_id:
@@ -142,12 +151,22 @@ def create(project_id: str, kind: str, name: str, config: dict | None = None) ->
             raise Invalid(f'{key} must be a list of up to 1000 nonempty strings')
     if 'query' in config and not isinstance(config['query'], str):
         raise Invalid('query must be text')
+    missing = [f.label for f in spec.fields
+               if f.required and not str(config.get(f.name, "")).strip()]
+    if missing:
+        raise Invalid(f"missing: {', '.join(missing)}")
+    secret_names = {f.name for f in spec.fields if f.secret}
+    public = {k: v for k, v in config.items() if k not in secret_names}
+    secret = {k: v for k, v in config.items() if k in secret_names}
     cid = f"{kind}-{uuid.uuid4().hex[:8]}"
     with connect() as c:
         c.execute(
             "INSERT INTO brain_connector_connections (id, project_id, kind, name, config) "
             "VALUES (%s, %s, %s, %s, %s)",
-            (cid, project_id, kind, name.strip(), json.dumps(config or {})))
+            (cid, project_id, kind, name.strip(), json.dumps(public)))
+    if secret:
+        credentials.put(cid, secret)
+    config = public
     return {"id": cid, "projectId": project_id, "kind": kind, "name": name.strip(),
             "detail": (config or {}).get("detail") or kind, "status": "never_run",
             "lastSyncAt": None, "itemCount": 0,
@@ -186,15 +205,67 @@ def stage_upload(connection_id: str, files: list[tuple[str, bytes]]) -> int:
     return n
 
 
+def _budget(policy: dict) -> dict:
+    """The plan's ceilings, in the shape the job carries them. Absent keys mean
+    no ceiling of this connection's own."""
+    return {k: v for k, v in (('limit_units', policy.get('absorb_limit_units')),
+                              ('max_tokens', policy.get('absorb_max_tokens'))) if v}
+
+
 def sync(connection_id: str, full: bool = False) -> dict:
     row = repos.get(connection_id) if _is_github(connection_id) else _require(connection_id)
     if not row:
         raise KeyError(f"no such connection: {connection_id}")
     policy = automation.get(connection_id)
+    absorb = automation.absorbs_on_sync(policy)
+    if absorb:
+        _guardrail(row['project_id'], policy)
+    budget = _budget(policy) if absorb else {}
     result = jobs.submit('github' if _is_github(connection_id) else row['kind'],
                          row['project_id'], connection_id=connection_id,
-                         absorb=policy['auto_absorb'], full=full)
+                         absorb=absorb, full=full,
+                         **({'budget': budget} if budget else {}))
     return {'id': connection_id, 'status': result['status'], 'runId': result['run_id']}
+
+
+def _guardrail(project_id: str, policy: dict) -> None:
+    """One ceiling, so a widened scope cannot quietly become an all-night run.
+
+    Checked before the job is queued rather than inside it: the point is that
+    nobody is surprised, and a run that has already started spending is too
+    late to be a warning.
+    """
+    ceiling = policy.get('absorb_guardrail_units') or 0
+    if not ceiling:
+        return
+    from . import sources
+    waiting = len(sources.queued(project_id))
+    if waiting > ceiling:
+        raise Invalid(
+            f"{waiting} units are queued, over this connection's ceiling of {ceiling}. "
+            "Raise the ceiling, narrow the scope, or absorb by hand.")
+
+
+def absorb(connection_id: str) -> dict:
+    """Write up what this connection's project has queued, under its plan.
+
+    Scheduled absorption calls this; so does a person pressing the button. The
+    queue is per project rather than per connection because that is what
+    sources.queued() answers and what an absorb run reads.
+    """
+    row = repos.get(connection_id) if _is_github(connection_id) else _require(connection_id)
+    if not row:
+        raise KeyError(f"no such connection: {connection_id}")
+    policy = automation.get(connection_id)
+    _guardrail(row['project_id'], policy)
+    from . import sources
+    ids = [r['id'] for r in sources.queued(row['project_id'])]
+    if not ids:
+        return {'id': connection_id, 'status': 'idle', 'runId': None, 'queued': 0}
+    result = jobs.submit('wiki', row['project_id'], absorb=True, ids=ids,
+                         budget=_budget(policy))
+    return {'id': connection_id, 'status': result['status'],
+            'runId': result['run_id'], 'queued': len(ids)}
 
 
 def remove(connection_id: str) -> None:
@@ -207,6 +278,13 @@ def remove(connection_id: str) -> None:
             (connection_id,)).fetchone()
     if not row:
         raise KeyError(f"no such connection: {connection_id}")
+    credentials.drop(connection_id)
+
+
+def settings_for(connection_id: str) -> dict:
+    """What a feeder needs at run time: the connection's config plus its
+    secrets. Never returned through an API route."""
+    return {**(_require(connection_id)["config"] or {}), **credentials.get(connection_id)}
 
 
 def watermark(connection_id: str) -> str:

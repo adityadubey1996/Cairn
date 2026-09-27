@@ -16,15 +16,15 @@ export function SourceResultRow({ row, onOpen }) {
       </span>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-[13.5px] font-medium">{row.name}</span>
+          <span className="truncate text-sm font-medium">{row.name}</span>
           {isLink && (
-            <span className="shrink-0 rounded-[9px] border border-border px-2 py-px text-[11px] text-muted-foreground">
+            <span className="shrink-0 rounded-[9px] border border-border px-2 py-px text-xs text-muted-foreground">
               web page
             </span>
           )}
-          <span className="ml-auto shrink-0 text-[11.5px] text-muted-foreground">scraped {ago(row.scrapedAt)}</span>
+          <span className="ml-auto shrink-0 text-xs text-muted-foreground">scraped {ago(row.scrapedAt)}</span>
         </div>
-        <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">{row.snippet}</p>
+        <p className="mt-0.5 text-sm leading-relaxed text-muted-foreground">{row.snippet}</p>
       </div>
       <Button variant="outline" size="xs" className="self-center" onClick={() => onOpen?.(row)}>
         <ExternalLink size={11} aria-hidden />

@@ -7,6 +7,9 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { EmptyState } from '@/components/EmptyState'
+import { SkeletonList } from '@/components/SkeletonList'
+import { OverflowMenu } from '@/components/OverflowMenu'
+import { PageHeader } from '@/components/PageHeader'
 
 function ago(iso) {
   if (!iso) return 'never'
@@ -45,14 +48,14 @@ const STEPS = [
 ]
 
 const Pill = ({ children, tone }) => (
-  <span className={cn('rounded border border-border px-1.5 py-[1px] text-[11.5px]',
+  <span className={cn('rounded border border-border px-1.5 py-[1px] text-xs',
                       tone && TEXT[tone])}>
     {children}
   </span>
 )
 
 const Err = ({ children }) => (
-  <p className="mt-2 flex items-start gap-1.5 text-[12.5px] text-destructive">
+  <p className="mt-2 flex items-start gap-1.5 text-sm text-destructive">
     <TriangleAlert size={14} className="mt-[2px] shrink-0" aria-hidden />
     <span>{children}</span>
   </p>
@@ -87,30 +90,30 @@ function AddRepo({ onAdded, projectId }) {
 
   return (
     <div className="rounded-lg border border-border bg-card/40 p-3.5">
-      <span className="text-[13px] font-medium">Track a repo</span>
+      <span className="text-sm font-medium">Track a repo</span>
       <div className="mt-2 flex gap-2">
         <input
           placeholder="https://github.com/owner/repo"
           value={url}
           onChange={(e) => { setUrl(e.target.value); setProbe(null) }}
           onKeyDown={(e) => e.key === 'Enter' && url && !busy && check()}
-          className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-[12.5px] outline-none focus:border-primary"
+          className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-sm outline-none focus:border-primary"
         />
         <Button size="sm" onClick={check} disabled={!url || busy}>Check</Button>
       </div>
 
       {/* A private repo needs a token before Check, not after: ls-remote is
           what probes it and that already needs auth. */}
-      <label htmlFor="repo-token" className="mt-2.5 mb-1 block text-[12px] text-muted-foreground">
+      <label htmlFor="repo-token" className="mt-2.5 mb-1 block text-xs text-muted-foreground">
         Access token <span className="opacity-70">— only for a private repo</span>
       </label>
       <input
         id="repo-token" type="password" value={token}
         placeholder="github_pat_… or ghp_…"
         onChange={(e) => setToken(e.target.value)}
-        className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-[12.5px] outline-none focus:border-primary"
+        className="w-full rounded-lg border border-border bg-background px-2.5 py-1.5 font-mono text-sm outline-none focus:border-primary"
       />
-      <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
         Read-only contents access is all this needs — no write scopes. It is
         stored for this repo and never sent back to the browser.{' '}
         <a
@@ -129,7 +132,7 @@ function AddRepo({ onAdded, projectId }) {
       </p>
 
       {probe && (
-        <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[12.5px]">
+        <div className="mt-2.5 flex flex-wrap items-center gap-2 text-sm">
           <Pill tone="ok">{token ? 'reachable with your token' : 'public · reachable'}</Pill>
           <span className="font-mono">{probe.slug}</span>
           {probe.size_kb != null && <span className="text-muted-foreground">{(probe.size_kb / 1024).toFixed(1)} MB</span>}
@@ -138,7 +141,7 @@ function AddRepo({ onAdded, projectId }) {
             branch
             <select
               value={branch} onChange={(e) => setBranch(e.target.value)}
-              className="rounded border border-border bg-background px-1.5 py-1 text-[12.5px] text-foreground outline-none"
+              className="rounded border border-border bg-background px-1.5 py-1 text-sm text-foreground outline-none"
             >
               {probe.branches.map((b) => <option key={b} value={b}>{b}</option>)}
             </select>
@@ -164,10 +167,10 @@ function Commits({ repoId, pinned, onIngestAt }) {
   }, [repoId])
 
   if (error) return <Err>{error}</Err>
-  if (!rows) return <p className="mt-3 text-[12.5px] text-muted-foreground">loading commits…</p>
+  if (!rows) return <p className="mt-3 text-sm text-muted-foreground">loading commits…</p>
 
   return (
-    <table className="mt-3 w-full text-[12.5px]">
+    <table className="mt-3 w-full text-sm">
       <tbody>
         {rows.map((c) => (
           <tr
@@ -205,7 +208,7 @@ function Queue({ repoId, onAbsorbKind }) {
   }, [repoId])
 
   if (error) return <Err>{error}</Err>
-  if (!q) return <p className="mt-3 text-[12.5px] text-muted-foreground">loading queue…</p>
+  if (!q) return <p className="mt-3 text-sm text-muted-foreground">loading queue…</p>
 
   const allRows = [...q.changed.map((r) => ({ ...r, why: 'changed' })),
                    ...q.new.map((r) => ({ ...r, why: 'new' }))]
@@ -238,13 +241,13 @@ function Queue({ repoId, onAbsorbKind }) {
           </Button>
         )}
         {alreadyAbsorbed > 0 && (
-          <span className="ml-auto text-[11.5px] text-muted-foreground">
+          <span className="ml-auto text-xs text-muted-foreground">
             {alreadyAbsorbed} already absorbed
           </span>
         )}
       </div>
 
-      <table className="mt-2 w-full text-[12.5px]">
+      <table className="mt-2 w-full text-sm">
         <tbody>
           {shown.slice(0, 200).map((u) => (
             <tr key={u.id} className="border-t border-border/60">
@@ -260,7 +263,7 @@ function Queue({ repoId, onAbsorbKind }) {
         </tbody>
       </table>
       {shown.length > 200 && (
-        <p className="mt-2 text-[12.5px] text-muted-foreground">
+        <p className="mt-2 text-sm text-muted-foreground">
           showing first 200 of {shown.length}
         </p>
       )}
@@ -284,13 +287,13 @@ function RepoCard({ r, onRun, onDelete, modelReady, onConfirm, onNavigate }) {
     <div className="rounded-lg border border-border bg-card/40 p-3.5">
       <div className="flex flex-wrap items-center gap-2">
         <span className={cn('size-2 shrink-0 rounded-full', DOT[tone])} aria-hidden />
-        <span className="font-mono text-[13px] font-medium">{r.id}</span>
+        <span className="font-mono text-sm font-medium">{r.id}</span>
         <Pill tone={tone}>{label}</Pill>
         <Pill>{r.branch}</Pill>
         {r.pinned_sha && <Pill tone="warn">pinned @ {r.pinned_sha.slice(0, 8)}</Pill>}
       </div>
 
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[12.5px] text-muted-foreground">
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
         <span><b className="text-foreground">{r.articles}</b> articles</span>
         <span><b className="text-foreground">{queued}</b> left to absorb</span>
         {r.absorbed > 0 && <span><b className="text-foreground">{r.absorbed}</b> absorbed</span>}
@@ -302,14 +305,14 @@ function RepoCard({ r, onRun, onDelete, modelReady, onConfirm, onNavigate }) {
       {/* During a run the only honest signal is the article count ticking up —
           absorb reports no percentage, so a progress bar here would be a lie. */}
       {running && (
-        <p className="mt-2 flex items-center gap-2 text-[12.5px] text-warning">
+        <p className="mt-2 flex items-center gap-2 text-sm text-warning">
           <Spinner className="size-3.5" />
           {activeLabel || 'Running'} · <b>{running}</b>
           {running === 'absorb' && <> · <b>{r.articles}</b> articles written so far</>}
         </p>
       )}
       {!running && r.last_run && (
-        <p className="mt-2 text-[12.5px] text-muted-foreground">
+        <p className="mt-2 text-sm text-muted-foreground">
           last: {r.last_run.step} · {r.last_run.status}
           {r.last_run.items_written != null &&
             ` · ${r.last_run.items_written}/${r.last_run.items_seen} units`}
@@ -318,20 +321,16 @@ function RepoCard({ r, onRun, onDelete, modelReady, onConfirm, onNavigate }) {
       )}
       {(r.last_run?.error || r.last_error) && <Err>{r.last_run?.error || r.last_error}</Err>}
 
-      <div className="mt-3 flex flex-wrap gap-2">
+      {/* Three tiers, left to right: the two actions worth a button, the two
+          panels you toggle, and everything else behind the menu. Eight equal
+          buttons in one row made Remove as loud as Sync. */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button size="sm" onClick={() => onRun(r.id, 'sync')} disabled={!!running}>
           Sync — clone, graph, ingest
         </Button>
-        {STEPS.map((s) => (
-          <Button
-            key={s.id} variant="ghost" size="sm"
-            onClick={() => onRun(r.id, s.id)}
-            disabled={!!running || (s.needsClone && !cloned)}
-          >{s.label}</Button>
-        ))}
 
-        {/* Absorb is the only step that spends money, so it is visually
-            separate and always behind a confirmation. */}
+        {/* Absorb is the only step that spends money, so it stays outline and
+            always behind a confirmation. */}
         <Button
           variant="outline" size="sm"
           disabled={!!running || !cloned || !modelReady || queued === 0}
@@ -346,33 +345,46 @@ function RepoCard({ r, onRun, onDelete, modelReady, onConfirm, onNavigate }) {
           })}
         >Absorb ×5</Button>
 
+        <span className="mx-1 h-5 w-px bg-border" aria-hidden />
+
         <Button
           variant={open === 'queue' ? 'outline' : 'ghost'} size="sm" disabled={!cloned}
+          aria-expanded={open === 'queue'}
           title="What an absorb would buy, unit by unit"
           onClick={() => setOpen(open === 'queue' ? '' : 'queue')}
         >Queue {queued}</Button>
         <Button
           variant={open === 'commits' ? 'outline' : 'ghost'} size="sm" disabled={!cloned}
+          aria-expanded={open === 'commits'}
           onClick={() => setOpen(open === 'commits' ? '' : 'commits')}
         >Commits</Button>
-        <Button
-          variant="ghost" size="sm" className="text-destructive hover:text-destructive"
-          disabled={!!running}
-          onClick={() => onConfirm({
-            title: `Stop tracking ${r.id}?`,
-            detail: 'The clone is deleted from disk. Every wiki article it produced is kept.',
-            confirmWord: r.id.split('/').pop(),
-            confirmLabel: 'Stop tracking',
-            run: () => onDelete(r.id),
-          })}
-        >Remove</Button>
-        {r.last_run && <Button variant="ghost" size="sm" onClick={() => onNavigate?.('pipeline')}>
-          View pipeline
-        </Button>}
+
+        <OverflowMenu
+          className="ml-auto"
+          label={`More actions for ${r.id}`}
+          items={[
+            ...STEPS.map((s) => ({
+              label: `Run ${s.label.toLowerCase()} only`,
+              disabled: !!running || (s.needsClone && !cloned),
+              onClick: () => onRun(r.id, s.id),
+            })),
+            r.last_run && { label: 'View pipeline', onClick: () => onNavigate?.('pipeline') },
+            {
+              label: 'Stop tracking…', danger: true, disabled: !!running,
+              onClick: () => onConfirm({
+                title: `Stop tracking ${r.id}?`,
+                detail: 'The clone is deleted from disk. Every wiki article it produced is kept.',
+                confirmWord: r.id.split('/').pop(),
+                confirmLabel: 'Stop tracking',
+                run: () => onDelete(r.id),
+              }),
+            },
+          ]}
+        />
       </div>
 
       {r.pinned_sha && (
-        <p className="mt-2 text-[12.5px] text-muted-foreground">
+        <p className="mt-2 text-sm text-muted-foreground">
           Parked on an older commit. Ingesting with no commit returns to{' '}
           <span className="font-mono">{r.branch}</span>.{' '}
           <Button variant="ghost" size="sm" disabled={!!running} onClick={() => onRun(r.id, 'ingest')}>
@@ -454,34 +466,31 @@ export function Repos({ projectId, onNavigate }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex items-baseline gap-3 px-6 pt-4">
-        <h1 className="text-[15px] font-semibold">Repos</h1>
-        {data && (
+      <PageHeader
+        title="Repos"
+        subtitle="Clone a public repository, or connect a private one with a token. Inspect its files and absorb them into wiki articles using your configured model."
+        actions={data && (
           <Button
-            variant="ghost" size="sm" onClick={sweep}
+            variant="outline" size="sm" onClick={sweep}
             disabled={anyBusy || data.repos.length === 0}
             title="Pull and re-ingest every tracked repo. Free — never absorbs."
           >
             <RefreshCw size={13} aria-hidden /> Sync all
           </Button>
         )}
-      </header>
+      />
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-3 pb-8">
-        <p className="text-[12.5px] text-muted-foreground">
-          Clone a public repository, or connect a private one with a token. Inspect its files and absorb them
-          into wiki articles using your configured local or hosted model.
-        </p>
-
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-8">
+        <div className="mx-auto w-full max-w-(--page-width)">
         {/* A failed first load must not read as a spinner that never resolves —
             the error is the answer. */}
         {!data ? (
           error ? <Err>{error}</Err>
-                : <p className="mt-4 text-[12.5px] text-muted-foreground">loading…</p>
+                : <SkeletonList className="mt-1" rows={3} />
         ) : (
-          <div className="mt-3 flex flex-col gap-3">
+          <div className="flex flex-col gap-3">
             {!modelReady && (
-              <p className="text-[12.5px] text-warning">
+              <p className="text-sm text-warning">
                 Choose an answer model to enable absorption. <button className="text-primary hover:underline" onClick={() => onNavigate?.('settings')}>Open Settings</button>
               </p>
             )}
@@ -505,6 +514,7 @@ export function Repos({ projectId, onNavigate }) {
             )}
           </div>
         )}
+        </div>
       </div>
 
       <ConfirmDialog

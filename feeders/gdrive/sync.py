@@ -227,7 +227,8 @@ _TRANSCRIPT_NAME_Q = "(" + " or ".join(
     f"name contains '{m}'" for m in _MEETING_MARKERS) + ")"
 
 
-def list_drive_files(modified_after: str = "", source_ids: list[str] | None = None) -> list[dict]:
+def list_drive_files(modified_after: str = "", source_ids: list[str] | None = None,
+                     scope: dict | None = None) -> list[dict]:
     """Default (GDRIVE_SOURCE_IDS empty): every text-like file the user owns,
     plus meeting transcripts anyone shared with them.
 
@@ -260,8 +261,7 @@ def list_drive_files(modified_after: str = "", source_ids: list[str] | None = No
         seen = {f["id"] for f in found}
         shared = _pages(f"trashed = false and {_TRANSCRIPT_NAME_Q}", modified_after)
         found += [f for f in shared if f["id"] not in seen]
-    return [_norm(f) for f in found
-            if _wanted(f) and not _excluded(f["name"])]
+    return [_norm(f) for f in found if wanted_by_scope(f, scope)]
 
 
 def _get_bytes(url: str) -> bytes:
@@ -418,11 +418,22 @@ def run(modified_after: str = "", project_id: str | None = None,
     """
     max_items = options.max_items(max_items)
     source_ids = options.source_ids(source_ids)
-    if project_id is None:
-        from server import projects
-        project_id = projects.ensure_default()
-    files = (list_drive_files(modified_after) if source_ids is None
-             else list_drive_files(modified_after, source_ids=source_ids))
+    settings = {}
+    if connection_id:
+        # Scope only narrows; it can never be the reason a sync fails. A
+        # connection_id is also passed for attribution alone (a hand run, a
+        # test), so an id with no row behind it means no scope, not an error.
+        try:
+            from server import connections
+            settings = connections.settings_for(connection_id)
+        except Exception:
+            log.debug("no stored settings for %s; syncing unscoped", connection_id)
+    scope = settings.get("scope") or None
+    # An explicit source_ids argument is a hand-run asking for exactly those,
+    # and outranks the saved scope; otherwise the scope's folders ARE the ids.
+    if source_ids is None and scope and scope.get("items"):
+        source_ids = list(scope["items"])
+    files = list_drive_files(modified_after, source_ids, scope)
     truncated = bool(max_items and len(files) > max_items)
     if max_items:
         files = sorted(files, key=lambda f: f["modified_time"], reverse=True)[:max_items]
@@ -498,3 +509,59 @@ def run(modified_after: str = "", project_id: str | None = None,
         failures.append(failure("gdrive-backlog", "More Drive documents remain",
                                 "Sync reached max_items; increase the limit or narrow source_ids"))
     return SyncResult(len(files), written, failures)
+
+
+# --------------------------------------------------------------------- scope
+# Folders, plus the file kinds Drive itself distinguishes. The kind list is
+# derived from _wanted() above rather than restated: a type Cairn cannot read
+# must never be offerable, and the two drifting apart is how a connector starts
+# promising things it does not do.
+
+FILE_KINDS = {
+    "document": ("Documents", (_EXPORTABLE_MIME,), ()),
+    "pdf": ("PDFs", (_PDF_MIME,), (".pdf",)),
+    "office": ("Word, Excel, PowerPoint", tuple(_OFFICE_MIMES), tuple(_OFFICE_MIMES.values())),
+    "text": ("Text and subtitles", (), (".txt", ".md", ".vtt", ".srt")),
+}
+DEFAULT_KINDS = tuple(FILE_KINDS)
+
+
+def kind_of(file: dict) -> str | None:
+    """Which offered kind a listed file belongs to, or None when it is not one
+    Cairn can read at all."""
+    mime = file.get("mimeType") or file.get("mime_type") or ""
+    name = (file.get("name") or "").lower()
+    for key, (_label, mimes, exts) in FILE_KINDS.items():
+        if mime in mimes or (exts and name.endswith(exts)):
+            return key
+    return None
+
+
+def wanted_by_scope(file: dict, scope: dict | None) -> bool:
+    """_wanted() decides what is readable; this decides what was asked for."""
+    if not _wanted(file) or _excluded(file["name"]):
+        return False
+    kinds = (scope or {}).get("file_kinds")
+    if not kinds:
+        return True
+    return kind_of(file) in set(kinds)
+
+
+def list_folders(_settings: dict | None = None) -> list[dict]:
+    """The folder tree this account can see, as two groups Drive itself uses.
+
+    Only folders: a scope names containers, never individual files, so that a
+    folder gaining a document tomorrow is inside the scope the user agreed to.
+    """
+    def group(title, note, query):
+        folders = _pages(query)
+        return {"id": title, "name": title, "note": note,
+                "items": sorted(({"id": f["id"], "name": f["name"],
+                                  "detail": _folder_path(f) or ""}
+                                 for f in folders), key=lambda f: f["name"].lower())}
+
+    mine = group("My Drive", "folders you own",
+                 f"mimeType = '{_FOLDER_MIME}' and 'me' in owners and trashed = false")
+    shared = group("Shared with me", "folders someone shared",
+                   f"mimeType = '{_FOLDER_MIME}' and sharedWithMe and trashed = false")
+    return [g for g in (mine, shared) if g["items"]]

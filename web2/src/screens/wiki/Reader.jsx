@@ -63,14 +63,14 @@ function ArticleBody({ text, citations, onNavigate }) {
 
 function Chip({ children, style, className }) {
   return (
-    <span className={`shrink-0 rounded-full border border-border px-2 py-0.5 text-[11px] ${className ?? ''}`} style={style}>
+    <span className={`shrink-0 rounded-full border border-border px-2 py-0.5 text-xs ${className ?? ''}`} style={style}>
       {children}
     </span>
   )
 }
 
 function Label({ children }) {
-  return <h2 className="text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">{children}</h2>
+  return <h2 className="text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">{children}</h2>
 }
 
 export function Reader({ path, projectId, nodes, state, absorbedAt, onNavigate, onRetry, onConnect, onDeleted }) {
@@ -162,7 +162,7 @@ export function Reader({ path, projectId, nodes, state, absorbedAt, onNavigate, 
   return (
     <article>
       <header className="flex flex-wrap items-center gap-2 pb-4">
-        <h1 className="mr-1 text-[15px] font-semibold text-foreground">{article.title}</h1>
+        <h1 className="mr-1 text-base font-semibold text-foreground">{article.title}</h1>
         <Chip style={{ borderColor: colour, color: colour, background: `${colour}14` }}>{article.type}</Chip>
         {article.stale && <Chip className="border-warning/40 text-warning">stale — pending re-verification</Chip>}
         <GradeBadgePills grades={article.grades} className="ml-auto" />
@@ -178,7 +178,7 @@ export function Reader({ path, projectId, nodes, state, absorbedAt, onNavigate, 
       </header>
 
       {deleteError && (
-        <p className="mb-3 flex items-start gap-1.5 text-[12.5px] text-destructive">
+        <p className="mb-3 flex items-start gap-1.5 text-sm text-destructive">
           <TriangleAlert size={14} className="mt-[2px] shrink-0" aria-hidden />
           <span>{deleteError}</span>
         </p>
@@ -233,11 +233,11 @@ export function Reader({ path, projectId, nodes, state, absorbedAt, onNavigate, 
       <section className="mt-7 border-t border-border pt-4">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
           <Label>Sources<span className="ml-1 opacity-70">{article.sources?.length ?? 0}</span></Label>
-          <span className="text-[11.5px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             {absorbed ? `absorbed ${ago(absorbed)}` : 'absorb time not recorded'}
           </span>
         </div>
-        <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
           Everything this article was built on, with the time each source was last scraped.
           A web page opens its real original URL, not the cached copy.
         </p>
@@ -253,7 +253,7 @@ export function Reader({ path, projectId, nodes, state, absorbedAt, onNavigate, 
             ))}
           </div>
         ) : (
-          <p className="py-3 text-[13px] text-muted-foreground">
+          <p className="py-3 text-sm text-muted-foreground">
             No sources recorded for this article yet — it was written before source tracking, or its absorb is still pending.
           </p>
         )}

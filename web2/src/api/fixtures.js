@@ -466,28 +466,41 @@ Related discussion in [#pipeline](cite:s6).`,
 // The eight connectors offered at onboarding, grouped the way the OAuth
 // consent actually works: one Google login covers Drive, Chat and Gmail.
 export const CONNECTOR_CATALOGUE = [
-  { group: 'Google', items: [
-    { kind: 'gdrive', name: 'Google Drive', desc: 'Docs, sheets and PDFs in your drive', auth: 'oauth' },
-    { kind: 'gchat', name: 'Google Chat', desc: 'Messages in spaces and DMs', auth: 'oauth' },
-    { kind: 'gmail', name: 'Gmail', desc: 'Threads you sent or were named in', auth: 'oauth', available: false },
+  { group: 'Google', note: 'One sign-in covers all three.', items: [
+    { id: 'gdrive', kind: 'gdrive', name: 'Google Drive', desc: 'Docs, PDFs and transcripts from your folders', auth: 'oauth' },
+    { id: 'gchat', kind: 'gchat', name: 'Google Chat', desc: 'Discussions in the team spaces you belong to', auth: 'oauth' },
+    { id: 'gmail', kind: 'gmail', name: 'Gmail', desc: 'Email threads and the links inside them', auth: 'oauth' },
   ] },
-  { group: 'Microsoft', items: [
-    { kind: 'outlook', name: 'Outlook', desc: 'Mail and calendar invitations', auth: 'oauth', available: false },
-    { kind: 'onedrive', name: 'OneDrive', desc: 'Files and shared folders', auth: 'oauth', available: false },
-    { kind: 'teams', name: 'Microsoft Teams', desc: 'Channel and chat messages', auth: 'oauth', available: false },
+  { group: 'Atlassian', note: 'Separate sign-ins: the two ask for different scopes.', items: [
+    { id: 'jira', kind: 'jira', name: 'Jira', desc: 'Issues, descriptions and comments', auth: 'oauth' },
+    { id: 'confluence', kind: 'confluence', name: 'Confluence', desc: 'Wiki pages from your Cloud site', auth: 'oauth' },
   ] },
   { group: 'Code and tickets', items: [
-    { kind: 'github', name: 'GitHub', desc: 'A repo, at a snapshot or across its history', auth: 'token' },
-    { kind: 'jira', name: 'Jira', desc: 'Issues, comments and assignees', auth: 'token', available: false },
+    // Absent from the registry's catalogue on purpose (`listed=False`): a repo
+    // is not a connection, it has its own screen. Without this flag the picker
+    // reads that absence as "no feeder behind this yet".
+    { id: 'github', kind: 'github', name: 'GitHub', desc: 'A repo, at a snapshot or across its history', auth: 'token', selfManaged: true },
+    { id: 'gitlab', kind: 'gitlab', name: 'GitLab', desc: 'Repository files and project wikis', auth: 'token' },
+    { id: 'ghissues', kind: 'ghissues', name: 'GitHub Issues', desc: 'Issues and comments from a repository', auth: 'token' },
+  ] },
+  { group: 'Docs and chat', items: [
+    { id: 'notion', kind: 'notion', name: 'Notion', desc: 'Pages shared with your integration', auth: 'token' },
+    { id: 'slack', kind: 'slack', name: 'Slack', desc: 'Channel history from a workspace you belong to', auth: 'token' },
+  ] },
+  { group: 'Web and files', note: 'No account behind either.', items: [
+    { id: 'upload', kind: 'upload', name: 'Upload', desc: 'Files or a folder added by hand', auth: 'none' },
+    { id: 'links', kind: 'links', name: 'Web pages', desc: 'Pages and PDFs referenced inside what you already synced', auth: 'none' },
   ] },
   { group: 'Advanced', advanced: true, items: [
-    { kind: 'whatsapp', name: 'WhatsApp', desc: 'Opt-in only — pairs a browser session', auth: 'browser' },
+    { id: 'whatsapp', kind: 'browser', name: 'WhatsApp', desc: 'Opt-in only — pairs a browser session', auth: 'browser' },
+    { id: 'linkedin', kind: 'browser', name: 'LinkedIn', desc: 'Opt-in only — configured message threads', auth: 'browser' },
   ] },
 ]
 
 export async function getSettings() { await delay(); return SETTINGS }
 export async function saveProvider(cfg) { await delay(); return cfg }
 export async function testProvider() { await delay(500); return { ok: true, detail: 'Key works' } }
+export async function connectorCatalogue() { await delay(); return [] }
 export async function getOllamaStatus() { await delay(); return OLLAMA_STATUS }
 
 // --- Chat (Batch 2) -------------------------------------------------------

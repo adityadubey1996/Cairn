@@ -21,7 +21,7 @@ function Radio({ checked, title, detail, onSelect, children }) {
         {checked && <span className="size-[7px] rounded-full bg-primary" />}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[13px]">{title}</span>
+        <span className="block text-sm">{title}</span>
         <span className="block text-xs text-muted-foreground">{detail}</span>
         {checked && children}
       </span>
@@ -51,7 +51,7 @@ export function GranularityPicker({ mode = 'snapshot', granularity = 'monthly', 
           <select
             value={granularity}
             onChange={(e) => onChange?.({ mode: 'history', granularity: e.target.value })}
-            className="rounded-md border border-border bg-background px-2 py-1 text-[13px] outline-none focus:border-primary"
+            className="rounded-md border border-border bg-background px-2 py-1 text-sm outline-none focus:border-primary"
           >
             {OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
           </select>
@@ -63,7 +63,7 @@ export function GranularityPicker({ mode = 'snapshot', granularity = 'monthly', 
               .map(([label, value]) => (
                 <span key={label} className="block">
                   <span className="block text-xs text-muted-foreground">{label}</span>
-                  <b className="block text-[15px] tabular-nums text-warning">{value}</b>
+                  <b className="block text-base tabular-nums text-warning">{value}</b>
                 </span>
               ))}
             <Button size="sm" className="ml-auto" onClick={(e) => { e.preventDefault(); onConfirm?.() }}>

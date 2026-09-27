@@ -225,6 +225,25 @@ CREATE TABLE IF NOT EXISTS brain_connection_policies (
   next_run_at timestamptz,
   last_run_at timestamptz
 );
+-- The absorption plan. Syncing is free; absorbing is the only step that spends
+-- the model, so when it runs and how much it may take are separate answers from
+-- the sync schedule above. `auto_absorb` is kept in step with absorb_trigger so
+-- that anything still reading the old boolean keeps working.
+ALTER TABLE brain_connection_policies ADD COLUMN IF NOT EXISTS
+  absorb_trigger text NOT NULL DEFAULT 'manual';
+ALTER TABLE brain_connection_policies ADD COLUMN IF NOT EXISTS
+  absorb_cron text NOT NULL DEFAULT '';
+-- 0 means "no ceiling of its own": units fall back to the whole queue and
+-- tokens to the pipeline's own default, which is what ran before this existed.
+ALTER TABLE brain_connection_policies ADD COLUMN IF NOT EXISTS
+  absorb_limit_units integer NOT NULL DEFAULT 0;
+ALTER TABLE brain_connection_policies ADD COLUMN IF NOT EXISTS
+  absorb_max_tokens bigint NOT NULL DEFAULT 0;
+ALTER TABLE brain_connection_policies ADD COLUMN IF NOT EXISTS
+  absorb_guardrail_units integer NOT NULL DEFAULT 0;
+ALTER TABLE brain_connection_policies ADD COLUMN IF NOT EXISTS
+  absorb_next_run_at timestamptz;
+
 ALTER TABLE brain_connector_runs ADD COLUMN IF NOT EXISTS project_id text;
 ALTER TABLE brain_connector_runs ADD COLUMN IF NOT EXISTS connection_id text;
 ALTER TABLE brain_connector_runs ADD COLUMN IF NOT EXISTS job jsonb;

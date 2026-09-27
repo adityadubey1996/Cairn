@@ -124,6 +124,10 @@ app.include_router(connections_router)
 app.include_router(timeline_router)
 app.include_router(people_router)
 app.include_router(settings_router)
+# Connector-owned routes, discovered from feeders/*/router.py. A connector
+# adds endpoints without this file changing — see connectors.routers().
+for _connector_router in connectors.routers():
+    app.include_router(_connector_router)
 
 
 @app.get("/health")

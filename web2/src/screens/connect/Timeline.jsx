@@ -58,7 +58,7 @@ function RunLog({ runId, live }) {
     )
   }
   return (
-    <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-muted/40 p-2 text-[11px] leading-relaxed text-muted-foreground">
+    <pre className="mt-2 max-h-64 overflow-auto rounded-md border border-border bg-muted/40 p-2 text-xs leading-relaxed text-muted-foreground">
       {lines.map((l) => l.line).join('\n')}
     </pre>
   )
@@ -111,7 +111,7 @@ export function Timeline({ projectId, projectName, forced }) {
           this row says which project's activity you are reading, and narrows
           it by event type. */}
       <div className="flex gap-1.5 overflow-x-auto pb-3" role="group" aria-label="Filter activity">
-        <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11.5px] text-muted-foreground">
+        <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground">
           <LayoutGrid size={11} aria-hidden />
           {projectName ?? '—'}
         </span>
@@ -119,7 +119,7 @@ export function Timeline({ projectId, projectName, forced }) {
           <button
             key={f.label} type="button" onClick={() => setKind(f.id)} aria-pressed={kind === f.id}
             className={cn(
-              'shrink-0 rounded-full border px-2.5 py-1 text-[11.5px] transition-colors',
+              'shrink-0 rounded-full border px-2.5 py-1 text-xs transition-colors',
               kind === f.id
                 ? 'border-border bg-card text-foreground'
                 : 'border-transparent text-muted-foreground hover:text-foreground',

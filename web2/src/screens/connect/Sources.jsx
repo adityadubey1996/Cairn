@@ -21,11 +21,17 @@ const minutes = (seconds) => {
   return h ? `${h}h ${m}m` : `${Math.max(1, m)}m`
 }
 
+// Keyed by kind, which is what a SOURCE carries. WhatsApp and LinkedIn are two
+// connectors sharing kind "browser", so that kind cannot name one of them —
+// whichever came last in the catalogue would have labelled both.
 const CATALOGUE_NAMES = new Map(
-  (api.CONNECTOR_CATALOGUE ?? []).flatMap((g) => g.items.map((i) => [i.kind, i.name])),
+  (api.CONNECTOR_CATALOGUE ?? [])
+    .flatMap((g) => g.items)
+    .filter((i, _n, all) => all.filter((o) => o.kind === i.kind).length === 1)
+    .map((i) => [i.kind, i.name]),
 )
 const kindLabel = (kind) =>
-  (kind === 'upload' ? 'Files' : CATALOGUE_NAMES.get(kind))
+  (kind === 'upload' ? 'Files' : kind === 'browser' ? 'Browser session' : CATALOGUE_NAMES.get(kind))
   ?? kind.charAt(0).toUpperCase() + kind.slice(1)
 
 // What one group is, per connector — mirroring server/sources.py's GROUP_BY.
@@ -53,8 +59,8 @@ function GroupRow({ group, kind, folder = false, onOpen }) {
       {folder
         ? <Folder size={13} className="shrink-0 text-muted-foreground" aria-hidden />
         : <ConnectorIcon kind={kind} size={13} className="shrink-0 text-muted-foreground" />}
-      <span className="min-w-0 flex-1 truncate text-[13.5px]">{group.label}</span>
-      <span className="shrink-0 text-[11.5px] text-muted-foreground">
+      <span className="min-w-0 flex-1 truncate text-sm">{group.label}</span>
+      <span className="shrink-0 text-xs text-muted-foreground">
         {group.count.toLocaleString()}
       </span>
       <ChevronRight size={14} className="shrink-0 text-muted-foreground" aria-hidden />
@@ -67,7 +73,7 @@ function FilterChip({ active, onClick, children }) {
     <button
       type="button" onClick={onClick} aria-pressed={active}
       className={cn(
-        'flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11.5px] transition-colors',
+        'flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors',
         active
           ? 'border-border bg-card text-foreground'
           : 'border-transparent text-muted-foreground hover:text-foreground',
@@ -93,7 +99,7 @@ function ProvenancePanel({ source, articles, projectId, onOpenArticle }) {
             key={id} type="button" role="tab" aria-selected={tab === id}
             onClick={() => setTab(id)}
             className={cn(
-              'rounded-md px-2 py-0.5 text-[11.5px] transition-colors',
+              'rounded-md px-2 py-0.5 text-xs transition-colors',
               tab === id ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
             )}
           >
@@ -111,7 +117,7 @@ function ProvenancePanel({ source, articles, projectId, onOpenArticle }) {
         {articles === null ? (
           <SkeletonList rows={2} icon={false} />
         ) : articles.length === 0 ? (
-          <p className="text-[12.5px] text-muted-foreground">
+          <p className="text-sm text-muted-foreground">
             {source.queued
               ? 'Queued for the wiki — not written up yet.'
               : 'Not in the wiki yet.'}
@@ -122,7 +128,7 @@ function ProvenancePanel({ source, articles, projectId, onOpenArticle }) {
               <button
                 key={a.path} type="button"
                 onClick={() => onOpenArticle?.(a.path)}
-                className="rounded-full border border-border bg-card px-2.5 py-1 text-[11.5px] text-primary hover:border-primary"
+                className="rounded-full border border-border bg-card px-2.5 py-1 text-xs text-primary hover:border-primary"
               >
                 {a.title}
               </button>
@@ -134,14 +140,14 @@ function ProvenancePanel({ source, articles, projectId, onOpenArticle }) {
 
       {tab === 'wiki' && source.text && (
         <>
-          <div className="mt-3 text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+          <div className="mt-3 text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
             Cached copy
           </div>
-          <p className="mt-1.5 text-[12.5px] leading-relaxed text-muted-foreground">{source.text}</p>
+          <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">{source.text}</p>
         </>
       )}
 
-      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-muted-foreground">
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
         <span>{source.detail}</span>
         {source.sha && <span>read at {source.sha}</span>}
         {source.url && (
@@ -195,7 +201,7 @@ function OriginalPane({ path }) {
   if (!RENDERS_INLINE.test(path)) {
     return (
       <div className="flex flex-col items-start gap-2 px-3 py-4">
-        <p className="text-[12.5px] text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           {path.split('/').pop()} can’t be shown in the browser. The text pulled
           out of it is on the Extracted tab.
         </p>
@@ -245,7 +251,7 @@ function LinkPills({ text, projectId }) {
 
   return (
     <div className="border-t border-border px-3 py-2.5">
-      <div className="mb-1.5 text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+      <div className="mb-1.5 text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
         Links in this {urls.length === 1 ? 'message' : 'transcript'} ({urls.length})
       </div>
       <div className="flex flex-wrap gap-1.5">
@@ -256,7 +262,7 @@ function LinkPills({ text, projectId }) {
             <span
               key={url} title={url}
               className={cn(
-                'inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-[11.5px]',
+                'inline-flex max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs',
                 failed ? 'border-destructive/50 text-destructive'
                   : src ? 'border-border bg-card text-primary'
                     : 'border-dashed border-border text-muted-foreground',
@@ -285,7 +291,7 @@ function LinkPills({ text, projectId }) {
       </div>
       {/* Not fetched yet is a real state, not a gap — say which. */}
       {urls.some((u) => !known[u]) && (
-        <p className="mt-1.5 text-[11px] text-muted-foreground">
+        <p className="mt-1.5 text-xs text-muted-foreground">
           Dashed pills have not been fetched yet — run the Saved links connector.
         </p>
       )}
@@ -334,7 +340,7 @@ export function SourceViewer({ source, onClose, embedded = false, projectId }) {
   return (
     <div className={cn('rounded-lg border border-border bg-card', !embedded && 'mb-2')}>
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-        <span className="min-w-0 flex-1 truncate text-[12.5px]">{source.name}</span>
+        <span className="min-w-0 flex-1 truncate text-sm">{source.name}</span>
         {/* Only where extraction actually lost something. Chat days, links and
             plain-text uploads have one file, and a tab strip over a single
             document is a control that does nothing. */}
@@ -345,7 +351,7 @@ export function SourceViewer({ source, onClose, embedded = false, projectId }) {
                 key={id} type="button" role="tab" aria-selected={tab === id}
                 onClick={() => setTab(id)}
                 className={cn(
-                  'rounded-md px-2 py-0.5 text-[11.5px] transition-colors',
+                  'rounded-md px-2 py-0.5 text-xs transition-colors',
                   tab === id
                     ? 'bg-muted text-foreground'
                     : 'text-muted-foreground hover:text-foreground',
@@ -388,7 +394,7 @@ export function SourceViewer({ source, onClose, embedded = false, projectId }) {
             <Markdown remarkPlugins={[remarkGfm]}>{keepLineBreaks(doc.text)}</Markdown>
           </div>
           {doc.truncated && (
-            <p className="mt-2 border-t border-border pt-2 text-[11px] text-muted-foreground">
+            <p className="mt-2 border-t border-border pt-2 text-xs text-muted-foreground">
               Truncated at 512 KB — use Raw for the whole file.
             </p>
           )}
@@ -707,7 +713,7 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
             value={input} onChange={(e) => setInput(e.target.value)}
             placeholder={mode === 'name' ? 'Filter by name…' : 'Search inside files…'}
             aria-label={mode === 'name' ? 'Filter sources by name' : 'Search inside file contents'}
-            className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           />
           {/* Inside the box, because it changes what the box DOES — a chip out
               in the filter row would read as one more filter. */}
@@ -717,7 +723,7 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
                 key={id} type="button" aria-pressed={mode === id}
                 onClick={() => setMode(id)}
                 className={cn(
-                  'rounded-md px-1.5 py-0.5 text-[11px] transition-colors',
+                  'rounded-md px-1.5 py-0.5 text-xs transition-colors',
                   mode === id ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground',
                 )}
               >
@@ -790,7 +796,7 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
           answer to "what am I about to do" — scrolling past it loses that. */}
       {selected.size > 0 && (
         <div className="sticky top-0 z-10 mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-primary/40 bg-card px-3 py-2">
-          <span className="text-[12.5px]">{selected.size.toLocaleString()} selected</span>
+          <span className="text-sm">{selected.size.toLocaleString()} selected</span>
           <Button size="xs" disabled={queueBusy || selectedUnavailable} onClick={() => setQueued(true)}
             title={selectedUnavailable ? 'Failed or excluded files cannot be queued. Change their policy or retry extraction first.' : undefined}>
             <BookPlus size={12} aria-hidden /> Queue for absorption
@@ -819,12 +825,12 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
       {(writingUp || !!queue?.queued) && (
         <div className="mb-2 rounded-lg border border-border bg-card/40 px-3 py-2">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="text-[12.5px]">
+            <span className="text-sm">
               {writingUp
                 ? `Absorbing · ${writeUpRun?.items_written ?? 0}/${writeUpRun?.items_seen ?? queue?.queued ?? 0}`
                 : `${queue.queued.toLocaleString()} ${queue.queued === 1 ? 'file' : 'files'} queued for absorption`}
             </span>
-            <span className="text-[11.5px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               ~{queue?.tokens?.toLocaleString() ?? '—'} tokens · ~{minutes(queue?.seconds)}
               {queue && !queue.measured && ' (estimate, no run measured yet)'}
             </span>
@@ -847,13 +853,13 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
           its own, and "no extractable text" is a page that needs a browser. */}
       {status === 'failed' && !!failureReasons.length && (
         <div className="mb-2 rounded-lg border border-border bg-card/40 px-3 py-2">
-          <div className="pb-1 text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+          <div className="pb-1 text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
             Why they failed
           </div>
           <div className="flex flex-wrap gap-1.5">
             {failureReasons.slice(0, 10).map((r) => (
               <span key={r.reason}
-                    className="rounded-full border border-border px-2.5 py-0.5 text-[11.5px]">
+                    className="rounded-full border border-border px-2.5 py-0.5 text-xs">
                 <span className="text-foreground">{r.count.toLocaleString()}</span>{' '}
                 <span className="text-muted-foreground">{r.reason}</span>
               </span>
@@ -863,14 +869,14 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
       )}
 
       {queueError && (
-        <p className="mb-2 flex items-start gap-1.5 text-[12.5px] text-destructive">
+        <p className="mb-2 flex items-start gap-1.5 text-sm text-destructive">
           <TriangleAlert size={14} className="mt-[2px] shrink-0" aria-hidden />
           <span>{queueError}</span>
         </p>
       )}
 
       {group && (tree || unit) && (
-        <nav aria-label="Folder path" className="mb-1 flex flex-wrap items-center gap-1.5 text-[11.5px] text-muted-foreground">
+        <nav aria-label="Folder path" className="mb-1 flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
           <button
             type="button" onClick={() => setGroup(null)}
             className="flex items-center gap-1.5 hover:text-foreground"
@@ -949,7 +955,7 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
 
       {listState === 'ready' && !absorptionState && !!subfolders.length && (
         <>
-          <div className="flex items-center gap-2 border-b border-border pb-1.5 text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+          <div className="flex items-center gap-2 border-b border-border pb-1.5 text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
             <span>Folder</span>
             <span className="ml-auto">Files inside</span>
           </div>
@@ -961,7 +967,7 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
 
       {listState === 'ready' && showGroups && (
         <>
-          <div className="flex items-center gap-2 border-b border-border pb-1.5 text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+          <div className="flex items-center gap-2 border-b border-border pb-1.5 text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
             <span>{unit.column}</span>
             <span className="ml-auto">{unit.items}</span>
           </div>
@@ -970,7 +976,7 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
             <GroupRow key={g.key} group={g} kind={kind} onOpen={() => setGroup(g.key)} />
           ))}
 
-          <div className="pt-3 text-[11.5px] text-muted-foreground">
+          <div className="pt-3 text-xs text-muted-foreground">
             {groups.length.toLocaleString()}{' '}
             {groups.length === 1 ? unit.one : unit.many}
             {' · '}{matchTotal.toLocaleString()} items
@@ -980,7 +986,7 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
 
       {listState === 'ready' && showFiles && filtered.length > 0 && (
         <>
-          <div className="flex items-center gap-2 border-b border-border pb-1.5 text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+          <div className="flex items-center gap-2 border-b border-border pb-1.5 text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
             {/* "Loaded", not "matching": paging means the rows in hand are the
                 only ids this page can name. Load more, then select all again. */}
             <input
@@ -1041,7 +1047,7 @@ export function Sources({ projectId, forced, onNavigate, refreshKey = 0, onAddFi
           })}
 
           <div className="flex items-center gap-2 pt-3">
-            <span className="text-[11.5px] text-muted-foreground">
+            <span className="text-xs text-muted-foreground">
               {filtered.length.toLocaleString()} of {matchTotal.toLocaleString()}
               {cursor ? ' loaded' : ''}
             </span>

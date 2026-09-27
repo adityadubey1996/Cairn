@@ -4,6 +4,7 @@ import * as api from '@/api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { PageHeader } from '@/components/PageHeader'
 import { ProviderPresetPicker } from '@/components/ProviderPresetPicker'
 import { SkeletonList } from '@/components/SkeletonList'
 
@@ -16,12 +17,12 @@ function Section({ title, detail, children, danger = false }) {
       danger ? 'border-destructive/40 bg-card' : 'border-border bg-card',
     )}>
       <h2 className={cn(
-        'text-[11px] font-medium uppercase tracking-[0.03em]',
+        'text-xs font-medium uppercase tracking-[0.03em]',
         danger ? 'text-destructive' : 'text-muted-foreground',
       )}>
         {title}
       </h2>
-      {detail && <p className="mt-1.5 text-[12.5px] leading-relaxed text-muted-foreground">{detail}</p>}
+      {detail && <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">{detail}</p>}
       <div className="mt-3.5">{children}</div>
     </section>
   )
@@ -38,17 +39,17 @@ function EmbeddingsPicker({ value, onChange }) {
   const preset = EMBEDDING_PRESETS.find((p) => p.id === (value.preset ?? 'ollama')) ?? EMBEDDING_PRESETS[0]
   return (
     <div>
-      <label htmlFor="embeddings" className="mb-1.5 block text-[12px] text-muted-foreground">Embeddings run on</label>
+      <label htmlFor="embeddings" className="mb-1.5 block text-xs text-muted-foreground">Embeddings run on</label>
       <select
         id="embeddings" value={preset.id}
         onChange={(e) => onChange({ ...value, preset: e.target.value })}
-        className="w-full rounded-lg border border-border bg-card px-2.5 py-2 text-[13.5px] outline-none focus:border-primary"
+        className="w-full rounded-lg border border-border bg-card px-2.5 py-2 text-sm outline-none focus:border-primary"
       >
         {EMBEDDING_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
       </select>
 
       {!preset.hosted && (
-        <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[12px]">
+        <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
           <span className={cn(
             'rounded-[9px] border px-2 py-px',
             value.reachable ? 'border-success/40 text-success' : 'border-destructive/40 text-destructive',
@@ -63,13 +64,13 @@ function EmbeddingsPicker({ value, onChange }) {
         <input
           aria-label="Embedding model" placeholder="nomic-embed-text"
           value={value.model ?? ''} onChange={(e) => onChange({ ...value, model: e.target.value })}
-          className="rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-[13px] outline-none focus:border-primary"
+          className="rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-sm outline-none focus:border-primary"
         />
         {preset.hosted && (
           <input
             aria-label="Embeddings API key" type="password" placeholder="paste your key"
             value={value.key ?? ''} onChange={(e) => onChange({ ...value, key: e.target.value })}
-            className="rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-[13px] outline-none focus:border-primary"
+            className="rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-sm outline-none focus:border-primary"
           />
         )}
       </div>
@@ -88,19 +89,19 @@ function ProjectRow({ project, isCurrent, onRename, onDelete }) {
       {editing ? (
         <input
           value={name} onChange={(e) => setName(e.target.value)} autoFocus aria-label="Project name"
-          className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-[13px] outline-none focus:border-primary"
+          className="min-w-0 flex-1 rounded-lg border border-border bg-background px-2.5 py-1.5 text-sm outline-none focus:border-primary"
         />
       ) : (
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-[13.5px]">{project.name}</span>
+            <span className="truncate text-sm">{project.name}</span>
             {isCurrent && (
-              <span className="shrink-0 rounded-full border border-border px-1.5 text-[10.5px] uppercase tracking-[0.03em] text-muted-foreground">
+              <span className="shrink-0 rounded-full border border-border px-1.5 text-xs uppercase tracking-[0.03em] text-muted-foreground">
                 current
               </span>
             )}
           </div>
-          <div className="truncate text-[11.5px] text-muted-foreground">
+          <div className="truncate text-xs text-muted-foreground">
             {plural(project.connectionCount ?? 0, 'connection')} · {plural(project.sourceCount ?? 0, 'source')}
           </div>
         </div>
@@ -250,19 +251,17 @@ export function Settings({ projects = [], projectId, onProjectsChange }) {
   })
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto">
-      <header className="flex items-baseline gap-3 px-6 pt-4">
-        <h1 className="text-[15px] font-semibold">Settings</h1>
-        <span className="text-[12.5px] text-muted-foreground">{currentName}</span>
-      </header>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <PageHeader title="Settings" subtitle={`Model, embeddings and projects. Currently in ${currentName}.`} />
 
+      <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="mx-auto flex w-full max-w-[720px] flex-col gap-4 px-6 py-5">
         <Section
           title="LLM provider"
           detail="Every answer and every absorbed article is paid for by the key you provide here. This product never has a key of its own."
         >
           {loading ? <SkeletonList rows={2} icon={false} /> : loadError ? (
-            <div className="flex items-center gap-2 text-[13px] text-destructive">
+            <div className="flex items-center gap-2 text-sm text-destructive">
               <TriangleAlert size={14} aria-hidden />Couldn’t load your settings.
             </div>
           ) : (
@@ -272,8 +271,8 @@ export function Settings({ projects = [], projectId, onProjectsChange }) {
               <div className="mt-3.5 flex items-center gap-2">
                 <Button size="sm" onClick={() => save('provider')}>Save provider</Button>
                 {saved?.section === 'provider' && (saved.ok
-                  ? <span className="flex items-center gap-1.5 text-[12px] text-success"><Check size={12} aria-hidden />Saved</span>
-                  : <span className="text-[12px] text-destructive">Couldn’t save — nothing was changed.</span>
+                  ? <span className="flex items-center gap-1.5 text-xs text-success"><Check size={12} aria-hidden />Saved</span>
+                  : <span className="text-xs text-destructive">Couldn’t save — nothing was changed.</span>
                 )}
               </div>
             </>
@@ -290,8 +289,8 @@ export function Settings({ projects = [], projectId, onProjectsChange }) {
               <div className="mt-3.5 flex items-center gap-2">
                 <Button size="sm" onClick={() => save('embeddings')}>Save embeddings</Button>
                 {saved?.section === 'embeddings' && (saved.ok
-                  ? <span className="flex items-center gap-1.5 text-[12px] text-success"><Check size={12} aria-hidden />Saved</span>
-                  : <span className="text-[12px] text-destructive">Couldn’t save — nothing was changed.</span>
+                  ? <span className="flex items-center gap-1.5 text-xs text-success"><Check size={12} aria-hidden />Saved</span>
+                  : <span className="text-xs text-destructive">Couldn’t save — nothing was changed.</span>
                 )}
               </div>
             </>
@@ -300,7 +299,7 @@ export function Settings({ projects = [], projectId, onProjectsChange }) {
 
         <Section title="Projects" detail="Projects are hard-isolated: nothing is ever read across them.">
           {rows.length === 0 ? (
-            <p className="text-[13px] text-muted-foreground">No projects yet.</p>
+            <p className="text-sm text-muted-foreground">No projects yet.</p>
           ) : rows.map((p) => (
             <ProjectRow
               key={p.id} project={p} isCurrent={p.id === projectId}
@@ -319,7 +318,7 @@ export function Settings({ projects = [], projectId, onProjectsChange }) {
               onDelete={confirmDeleteProject}
             />
           ))}
-          {projectNote && <p className="pt-2.5 text-[12px] text-destructive">{projectNote}</p>}
+          {projectNote && <p className="pt-2.5 text-xs text-destructive">{projectNote}</p>}
         </Section>
 
         <Section
@@ -329,8 +328,8 @@ export function Settings({ projects = [], projectId, onProjectsChange }) {
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-3">
               <div className="min-w-0 flex-1">
-                <div className="text-[13.5px]">Disconnect all sources</div>
-                <div className="text-[12px] text-muted-foreground">
+                <div className="text-sm">Disconnect all sources</div>
+                <div className="text-xs text-muted-foreground">
                   Removes every connection in “{currentName}”. Nothing new syncs after this.
                 </div>
               </div>
@@ -347,8 +346,8 @@ export function Settings({ projects = [], projectId, onProjectsChange }) {
 
             <div className="flex flex-wrap items-center gap-3">
               <div className="min-w-0 flex-1">
-                <div className="text-[13.5px]">Reset local data</div>
-                <div className="text-[12px] text-muted-foreground">
+                <div className="text-sm">Reset local data</div>
+                <div className="text-xs text-muted-foreground">
                   Deletes every project, connection, source and article stored on this machine.
                 </div>
               </div>
@@ -361,9 +360,10 @@ export function Settings({ projects = [], projectId, onProjectsChange }) {
               </Button>
             </div>
 
-            {dangerNote && <p className="text-[12px] text-muted-foreground">{dangerNote}</p>}
+            {dangerNote && <p className="text-xs text-muted-foreground">{dangerNote}</p>}
           </div>
         </Section>
+      </div>
       </div>
 
       <ConfirmDialog

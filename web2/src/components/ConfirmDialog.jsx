@@ -28,18 +28,18 @@ export function ConfirmDialog({ open, title, detail, confirmWord, confirmLabel =
       <div className="w-full max-w-[420px] rounded-[10px] border border-destructive/60 bg-card p-4">
         <div className="mb-1.5 flex items-center gap-2">
           <TriangleAlert size={15} className="text-destructive" aria-hidden />
-          <span className="text-[13.5px] font-semibold text-destructive">{title}</span>
+          <span className="text-sm font-semibold text-destructive">{title}</span>
         </div>
-        <p className="text-[12px] leading-relaxed text-muted-foreground">{detail}</p>
+        <p className="text-xs leading-relaxed text-muted-foreground">{detail}</p>
 
         {confirmWord && (
           <>
-            <label htmlFor="confirm-word" className="mt-3 mb-1.5 block text-[12px] text-muted-foreground">
+            <label htmlFor="confirm-word" className="mt-3 mb-1.5 block text-xs text-muted-foreground">
               Type <b className="text-foreground">{confirmWord}</b> to confirm
             </label>
             <input
               id="confirm-word" value={typed} onChange={(e) => setTyped(e.target.value)} autoFocus
-              className="w-full rounded-lg border border-destructive/50 bg-background px-2.5 py-1.5 text-[13px] outline-none focus:border-destructive"
+              className="w-full rounded-lg border border-destructive/50 bg-background px-2.5 py-1.5 text-sm outline-none focus:border-destructive"
             />
           </>
         )}

@@ -9,27 +9,51 @@ sanitised — there is no cleaning step, only accept or reject.
 """
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from . import config, runs
+# `runs` is aliased because this module also defines a `runs()` function for
+# the API, which shadowed the module and made run_step raise AttributeError
+# on its first line.
+from . import config
+from . import runs as run_log
 from .db import connect
 
 # ---------------------------------------------------------------- validation
 
-OWNER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}$")
 NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]{1,255}$")
 SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
-URL_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$")
+# One path segment. The leading character must be alphanumeric, which is what
+# bans `-rf` (argument injection) and `.`/`..` (traversal) in a single rule —
+# neither can be spelled at all, rather than being spelled and then caught.
+SEGMENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+MAX_SEGMENTS = 10
+
+# Hosts where a project is exactly `owner/name`. GitLab is the exception the
+# pair cannot express: it nests groups arbitrarily deep. Keeping the flat hosts
+# flat is not pedantry — it is what rejects the `/tree/main` and `/blob/...`
+# URLs people actually paste, instead of cloning a repo called "main".
+# A host an operator added themselves is assumed to nest; they put it there.
+FLAT_HOSTS = {"github.com", "bitbucket.org", "codeberg.org"}
+
+# The username half of the basic-auth pair each host expects for a token.
+# Getting this wrong is a 401 the user cannot debug, because the token is
+# redacted out of the error by the time they see it.
+TOKEN_USER = {"github.com": "x-access-token", "gitlab.com": "oauth2",
+              "bitbucket.org": "x-token-auth"}
+DEFAULT_TOKEN_USER = "git"          # Gitea/Forgejo, and self-hosted anything
 
 STATES = ("added", "cloning", "cloned", "graphed", "ingested",
           "absorbing", "ready", "failed", "evicted")
@@ -39,22 +63,115 @@ class Invalid(ValueError):
     """Rejected at the trust boundary. Maps to 400."""
 
 
-def parse_url(url: str) -> tuple[str, str]:
-    """(owner, name) or raise. Whitelist the whole shape; never repair it.
+def _resolve(host: str) -> list[str]:
+    """Every address `host` answers with. A seam, so the tests stay offline."""
+    return sorted({ai[4][0] for ai in
+                   socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)})
 
-    Rejected by construction: any other scheme or host, userinfo, a port, a
-    query, extra path depth. `https://evil.com/github.com/a/b` fails the anchor,
-    `https://user:pass@github.com/a/b` fails because userinfo is part of the
-    authority the pattern does not admit.
+
+def check_host(host: str) -> str:
+    """On the allowlist and pointing at the public internet, or raise.
+
+    The allowlist alone is not enough. `git clone` resolves the name itself, so
+    a host that answers 127.0.0.1 or 10.0.0.5 turns this feature into a request
+    for the server to fetch from inside its own network — the allowlist says
+    which names are permitted, this says the name must not be aimed inward.
+
+    ponytail: resolved per call, not cached. git re-resolves independently, so
+    a cache would shrink the rebinding window without closing it; closing it
+    needs the resolved address pinned into the clone, which git will not do.
     """
-    m = URL_RE.match((url or "").strip())
-    if not m:
-        raise Invalid("expected https://github.com/<owner>/<repo>")
-    owner, name = m.group(1), m.group(2)
-    if not OWNER_RE.match(owner):
-        raise Invalid(f"invalid owner: {owner!r}")
-    if not NAME_RE.match(name) or name in (".", "..") or name.startswith("-"):
-        raise Invalid(f"invalid repo name: {name!r}")
+    h = (host or "").lower()
+    if h not in config.REPO_ALLOWED_HOSTS:
+        raise Invalid(f"host not allowed: {host!r} "
+                      f"(allowed: {', '.join(config.REPO_ALLOWED_HOSTS)})")
+    try:
+        addrs = _resolve(h)
+    except OSError as e:
+        raise Invalid(f"cannot resolve host {h}: {e}")
+    if not addrs:
+        raise Invalid(f"cannot resolve host {h}")
+    for a in addrs:
+        # is_global is False for loopback, private, link-local, multicast and
+        # reserved ranges in both families — one check, no range table to get
+        # subtly wrong.
+        if not ipaddress.ip_address(a).is_global:
+            raise Invalid(f"{h} resolves to a non-public address ({a})")
+    return h
+
+
+def check_segment(seg: str, where: str = "path segment") -> str:
+    if not SEGMENT_RE.match(seg or ""):
+        raise Invalid(f"invalid {where}: {seg!r}")
+    if seg in (".", "..") or "/" in seg or "\\" in seg:  # unreachable; second lock
+        raise Invalid(f"invalid {where}: {seg!r}")
+    return seg
+
+
+def parse_url(url: str) -> tuple[str, str]:
+    """(host, path) or raise. Whitelist the whole shape; never repair it.
+
+    Rejected by construction: any other scheme, a host off the allowlist, a
+    host aimed at a private address, userinfo, a port, a query or a fragment.
+    `https://evil.com/github.com/a/b` fails the allowlist on `evil.com`, and
+    `https://user:pass@github.com/a/b` fails because a credential in a URL is a
+    credential we would hand to whatever the host turns out to be.
+
+    `path` is two or more segments — an owner and a name at minimum, since no
+    host here addresses a repo with fewer — and more only where the host nests.
+    """
+    raw = (url or "").strip()
+    if any(c in raw for c in "\\ \t\r\n") or any(ord(c) < 0x20 for c in raw):
+        raise Invalid("url contains whitespace or control characters")
+    if not raw.startswith("https://"):
+        raise Invalid("expected https://<host>/<owner>/<repo>")
+    u = urlsplit(raw)
+    if u.scheme != "https":
+        raise Invalid("only https is supported")
+    if u.username or u.password or "@" in u.netloc:
+        raise Invalid("credentials in the url are not accepted")
+    if u.query or u.fragment:
+        raise Invalid("a query or fragment is not part of a repo url")
+    try:
+        port = u.port
+    except ValueError:
+        raise Invalid("invalid port")
+    if port is not None:
+        raise Invalid("a port is not accepted")
+    host = check_host(u.hostname or "")
+
+    path = u.path.strip("/")
+    if path.endswith(".git"):
+        path = path[:-4]
+    segments = path.split("/") if path else []
+    if len(segments) < 2:
+        raise Invalid(f"expected https://{host}/<owner>/<repo>")
+    if len(segments) > MAX_SEGMENTS:
+        raise Invalid(f"path is more than {MAX_SEGMENTS} segments deep")
+    if len(segments) > 2 and host in FLAT_HOSTS:
+        raise Invalid(f"{host} repos are <owner>/<repo>; "
+                      f"{'/'.join(segments)!r} is not a repository url")
+    for seg in segments:
+        check_segment(seg)
+    return host, "/".join(segments)
+
+
+def repo_key(host: str, path: str) -> str:
+    """The id, the on-disk location and the display name, case preserved.
+
+    github.com keeps its bare `owner/name`, so every row written before other
+    hosts existed still resolves to the same id and the same clone directory.
+    Every other host is prefixed, which is also what keeps `gitlab.com/a/b`
+    from colliding with a GitHub `a/b`.
+    """
+    return path if host == "github.com" else f"{host}/{path}"
+
+
+def owner_and_name(key: str) -> tuple[str, str]:
+    """The brain_repos pair. `owner` is everything above the leaf, so it is
+    `acme` on GitHub and `gitlab.com/group/subgroup` on a nested GitLab path —
+    which keeps `owner/name` the id and the directory layout, unchanged."""
+    owner, _, name = key.rpartition("/")
     return owner, name
 
 
@@ -129,17 +246,23 @@ def clear_token(repo_id: str) -> None:
                   (f"repo_token:{repo_id}",))
 
 
-def token_for(repo_id: str) -> str:
+def token_for(repo_id: str, host: str = "github.com") -> str:
     """The repo's own token, else the deployment-wide one. The specific beats
     the general, which is what lets one private repo be added without making
-    every repo depend on a GITHUB_TOKEN in the environment."""
+    every repo depend on a GITHUB_TOKEN in the environment.
+
+    The environment-wide fallback is GitHub's alone. Sending it to gitlab.com
+    because a GitLab repo happens to have no token of its own would hand a
+    GitHub credential to a different company.
+    """
     with connect() as c:
         r = c.execute("SELECT value FROM brain_settings WHERE id = %s",
                       (f"repo_token:{repo_id}",)).fetchone()
-    return ((r["value"] or {}).get("token") if r else "") or config.GITHUB_TOKEN
+    own = ((r["value"] or {}).get("token") if r else "") or ""
+    return own or (config.GITHUB_TOKEN if host == "github.com" else "")
 
 
-def clone_url(owner: str, name: str) -> str:
+def clone_url(host: str, path: str) -> str:
     """Rebuilt from validated parts, never echoed from user input.
 
     A token is embedded here and nowhere else: it never reaches the browser,
@@ -147,14 +270,16 @@ def clone_url(owner: str, name: str) -> str:
     truncated stderr from git, which prints the URL with the token redacted,
     but treat any surfaced stderr as sensitive anyway.
 
-    This is what makes a private repo reachable on a server, where there are no
-    working trees to clone from and no SSH agent.
+    The username half of the pair is per-host: GitHub reads `x-access-token`,
+    GitLab `oauth2`, Bitbucket `x-token-auth`. This is what makes a private
+    repo reachable on a server, where there are no working trees to clone from
+    and no SSH agent.
     """
-    token = token_for(f"{owner}/{name}".lower())
+    token = token_for(repo_key(host, path).lower(), host)
     if token:
-        return (f"https://x-access-token:{token}"
-                f"@github.com/{owner}/{name}.git")
-    return f"https://github.com/{owner}/{name}.git"
+        user = TOKEN_USER.get(host, DEFAULT_TOKEN_USER)
+        return f"https://{user}:{token}@{host}/{path}.git"
+    return f"https://{host}/{path}.git"
 
 
 def _redact(msg: str) -> str:
@@ -248,35 +373,38 @@ def probe(url: str) -> dict:
                 "size_kb": size_kb, "private": None,
                 "too_big": size_kb / 1024 > config.REPO_MAX_SIZE_MB}
 
-    owner, name = parse_url(url)
-    slug = f"{owner}/{name}"
+    host, path = parse_url(url)
+    slug = repo_key(host, path)
     try:
-        out = git(["ls-remote", "--heads", "--exit-code", "--", clone_url(owner, name)],
+        out = git(["ls-remote", "--heads", "--exit-code", "--", clone_url(host, path)],
                   timeout=20)
     except subprocess.TimeoutExpired:
-        raise RuntimeError("timed out contacting github")
+        raise RuntimeError(f"timed out contacting {host}")
     branches = sorted({ln.split("refs/heads/", 1)[1]
                        for ln in out.splitlines() if "refs/heads/" in ln})
 
     size_kb = default_branch = private = None
-    try:
-        req = urllib.request.Request(
-            f"https://api.github.com/repos/{owner}/{name}",
-            headers={"Accept": "application/vnd.github+json",
-                     "User-Agent": "ai-brain"})
-        with urllib.request.urlopen(req, timeout=10) as r:
-            meta = json.load(r)
-        size_kb, default_branch = meta.get("size"), meta.get("default_branch")
-        private = meta.get("private")
-    except Exception:
-        pass  # unauthenticated API is rate-limited; ls-remote already answered
+    if host == "github.com":
+        try:
+            req = urllib.request.Request(
+                f"https://api.github.com/repos/{path}",
+                headers={"Accept": "application/vnd.github+json",
+                         "User-Agent": "ai-brain"})
+            with urllib.request.urlopen(req, timeout=10) as r:
+                meta = json.load(r)
+            size_kb, default_branch = meta.get("size"), meta.get("default_branch")
+            private = meta.get("private")
+        except Exception:
+            pass  # unauthenticated API is rate-limited; ls-remote already answered
+    # Other hosts: no size, so no too_big verdict. ls-remote already said the
+    # repo is reachable, which is the question that gates adding it.
 
     if default_branch not in branches:
         default_branch = ("main" if "main" in branches else
                           "master" if "master" in branches else
                           branches[0] if branches else None)
     too_big = bool(size_kb and size_kb / 1024 > config.REPO_MAX_SIZE_MB)
-    return {"ok": True, "slug": slug, "url": f"https://github.com/{owner}/{name}",
+    return {"ok": True, "slug": slug, "url": f"https://{host}/{path}",
             "branches": branches, "default_branch": default_branch,
             "size_kb": size_kb, "private": private, "too_big": too_big}
 
@@ -318,9 +446,11 @@ def update(repo_id: str, **fields) -> None:
 def add(url: str, branch: str | None = None, token: str = "", project_id: str | None = None) -> dict:
     if is_local(url):
         owner, name, _p = parse_local(url)
+        key = f"{owner}/{name}"
     else:
-        owner, name = parse_url(url)
-    slug = f"{owner}/{name}".lower()
+        key = repo_key(*parse_url(url))
+        owner, name = owner_and_name(key)
+    slug = key.lower()
     if get(slug):
         raise Invalid(f"already tracked: {slug}")
     # Stored before probe(), because probe() is the first thing that needs it:
@@ -579,10 +709,11 @@ def step_clone(row: dict) -> dict:
     owner, name, branch = row["owner"], row["name"], check_branch(row["branch"])
     clone = clone_dir(owner, name)
     wiki = wiki_dir(owner, name)
-    # A local working tree is re-validated on every clone, not trusted from the
-    # row: the allow-list may have changed since it was added.
+    # Re-validated on every clone, not trusted from the row: the allow-lists
+    # may have changed since it was added, and a host dropped from
+    # REPO_ALLOWED_HOSTS must stop being cloned rather than keep working.
     url = (str(parse_local(row["url"])[2]) if is_local(row["url"])
-           else clone_url(owner, name))
+           else clone_url(*parse_url(row["url"])))
     t = TIMEOUTS["clone"]
 
     if (clone / ".git").is_dir():
@@ -772,17 +903,17 @@ def run_step(repo_id: str, step: str, **kwargs) -> dict:
         raise Invalid(f"unknown step: {step}")
     row = _require(repo_id)
     _claim(repo_id, step)
-    run_id = runs.start_run("github", repo_id=repo_id, step=step)
+    run_id = run_log.start_run("github", repo_id=repo_id, step=step)
     prev_state = row["state"]
     try:
         result = STEPS[step](row, **kwargs)
-        runs.finish_run(run_id, status="ok",
+        run_log.finish_run(run_id, status="ok",
                         items_seen=result.get("items_seen", 0),
                         items_written=result.get("items_written", 0))
         return result
     except Exception as e:
         msg = _redact(str(e))[:2000]
-        runs.finish_run(run_id, status="error", error=msg)
+        run_log.finish_run(run_id, status="error", error=msg)
         # failed is not terminal: the row keeps its clone and wiki, and the
         # retry button re-runs this step. Recording the state we came from is
         # what makes that safe.

@@ -46,15 +46,15 @@ function OllamaPanel({ value, onChange }) {
   }, [status?.suggested])  // eslint-disable-line react-hooks/exhaustive-deps
 
   if (error) {
-    return <p className="mt-2.5 text-[12px] text-destructive">Couldn’t read the Ollama status.</p>
+    return <p className="mt-2.5 text-xs text-destructive">Couldn’t read the Ollama status.</p>
   }
   if (!status) {
-    return <p className="mt-2.5 text-[12px] text-muted-foreground">Checking Ollama…</p>
+    return <p className="mt-2.5 text-xs text-muted-foreground">Checking Ollama…</p>
   }
 
   if (!status.reachable) {
     return (
-      <div className="mt-2.5 text-[12px]">
+      <div className="mt-2.5 text-xs">
         <span className="rounded-[9px] border border-destructive/40 px-2 py-px text-destructive">
           not reachable
         </span>
@@ -69,7 +69,7 @@ function OllamaPanel({ value, onChange }) {
 
   if (!status.models.length) {
     return (
-      <div className="mt-2.5 text-[12px]">
+      <div className="mt-2.5 text-xs">
         <span className="rounded-[9px] border border-warning/40 px-2 py-px text-warning">
           no chat model
         </span>
@@ -79,7 +79,7 @@ function OllamaPanel({ value, onChange }) {
         <ul className="mt-2 flex flex-col gap-1.5">
           {status.recommended.map((r) => (
             <li key={r.model} className="flex flex-wrap items-baseline gap-2">
-              <code className="rounded bg-background px-1.5 py-0.5 font-mono text-[11.5px] text-foreground">
+              <code className="rounded bg-background px-1.5 py-0.5 font-mono text-xs text-foreground">
                 {r.command}
               </code>
               <span className="text-muted-foreground">{r.why}</span>
@@ -92,18 +92,18 @@ function OllamaPanel({ value, onChange }) {
 
   return (
     <>
-      <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[12px]">
+      <div className="mt-2.5 flex flex-wrap items-center gap-2 text-xs">
         <span className="rounded-[9px] border border-success/40 px-2 py-px text-success">reachable</span>
         <span className="text-muted-foreground">No key needed — Ollama runs on this machine.</span>
       </div>
-      <label htmlFor="ollama-model" className="mt-3 mb-1.5 block text-[12px] text-muted-foreground">
+      <label htmlFor="ollama-model" className="mt-3 mb-1.5 block text-xs text-muted-foreground">
         Model
       </label>
       <select
         id="ollama-model"
         value={value.model ?? status.suggested ?? ''}
         onChange={(e) => onChange?.({ ...value, model: e.target.value })}
-        className="w-full rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-[13px] outline-none focus:border-primary"
+        className="w-full rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-sm outline-none focus:border-primary"
       >
         {status.models.map((m) => (
           <option key={m} value={m}>
@@ -121,12 +121,12 @@ export function ProviderPresetPicker({ value = {}, onChange, onTest, testResult,
 
   return (
     <div className={className}>
-      <label htmlFor="provider" className="mb-1.5 block text-[12px] text-muted-foreground">Provider</label>
+      <label htmlFor="provider" className="mb-1.5 block text-xs text-muted-foreground">Provider</label>
       <select
         id="provider"
         value={preset.id}
         onChange={(e) => onChange?.({ ...value, preset: e.target.value })}
-        className="w-full rounded-lg border border-border bg-card px-2.5 py-2 text-[13.5px] outline-none focus:border-primary"
+        className="w-full rounded-lg border border-border bg-card px-2.5 py-2 text-sm outline-none focus:border-primary"
       >
         {PRESETS.map((p) => (
           <option key={p.id} value={p.id}>{p.label}{p.note ? ` — ${p.note}` : ''}</option>
@@ -137,7 +137,7 @@ export function ProviderPresetPicker({ value = {}, onChange, onTest, testResult,
 
       {preset.needsKey && (
         <>
-          <label htmlFor="provider-key" className="mt-3 mb-1.5 block text-[12px] text-muted-foreground">API key</label>
+          <label htmlFor="provider-key" className="mt-3 mb-1.5 block text-xs text-muted-foreground">API key</label>
           <div className="flex gap-2">
             <input
               id="provider-key"
@@ -145,7 +145,7 @@ export function ProviderPresetPicker({ value = {}, onChange, onTest, testResult,
               value={value.key ?? ''}
               placeholder={value.keyMasked ?? 'paste your key'}
               onChange={(e) => onChange?.({ ...value, key: e.target.value })}
-              className="min-w-0 flex-1 rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-[13px] outline-none focus:border-primary"
+              className="min-w-0 flex-1 rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-sm outline-none focus:border-primary"
             />
             <Button variant="outline" size="sm" onClick={() => setRevealed((v) => !v)}>
               {revealed ? <EyeOff size={13} aria-hidden /> : <Eye size={13} aria-hidden />}
@@ -154,7 +154,7 @@ export function ProviderPresetPicker({ value = {}, onChange, onTest, testResult,
             <Button variant="outline" size="sm" onClick={() => onTest?.(value)}>Test key</Button>
           </div>
           {preset.keyEnv && (
-            <p className="mt-1.5 text-[11.5px] text-muted-foreground">
+            <p className="mt-1.5 text-xs text-muted-foreground">
               Or leave this empty and put <code className="font-mono">{preset.keyEnv}</code> in your{' '}
               <code className="font-mono">.env</code> — the server picks it up either way.
             </p>
@@ -167,17 +167,17 @@ export function ProviderPresetPicker({ value = {}, onChange, onTest, testResult,
           <input
             aria-label="Base URL" placeholder="https://api.example.com/v1"
             value={value.baseUrl ?? ''} onChange={(e) => onChange?.({ ...value, baseUrl: e.target.value })}
-            className="rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-[13px] outline-none focus:border-primary"
+            className="rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-sm outline-none focus:border-primary"
           />
           <input
             aria-label="Model name" placeholder="model-name"
             value={value.model ?? ''} onChange={(e) => onChange?.({ ...value, model: e.target.value })}
-            className="rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-[13px] outline-none focus:border-primary"
+            className="rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-sm outline-none focus:border-primary"
           />
         </div>
       )}
 
-      <div className="mt-2.5 text-[12px]">
+      <div className="mt-2.5 text-xs">
         {testResult?.ok
           ? <span className="flex items-center gap-1.5 text-success"><Check size={12} aria-hidden />{testResult.detail}</span>
           : testResult
@@ -188,14 +188,14 @@ export function ProviderPresetPicker({ value = {}, onChange, onTest, testResult,
       {/* What a question would use right now. Differs from the form whenever the
           key came from .env, or nothing was ever saved. */}
       {effective?.preset && (
-        <p className="mt-1.5 text-[11.5px] text-muted-foreground">
+        <p className="mt-1.5 text-xs text-muted-foreground">
           Answering with <span className="text-foreground">{effective.preset}</span>
           {effective.model ? <> · <code className="font-mono">{effective.model}</code></> : null}
           {effective.source === 'env' ? ' (from .env)' : null}
         </p>
       )}
       {effective && !effective.preset && (
-        <p className="mt-1.5 text-[11.5px] text-warning">{effective.detail}</p>
+        <p className="mt-1.5 text-xs text-warning">{effective.detail}</p>
       )}
     </div>
   )

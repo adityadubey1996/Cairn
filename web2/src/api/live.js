@@ -140,6 +140,26 @@ export async function saveConnectionPolicy(id, policy) {
   })
 }
 
+// What a connection is allowed to read. `options` is a live provider call and
+// can be slow, so it is deliberately separate from the cheap saved answer.
+export async function connectionScope(id) {
+  return api(`/api/connections/${encodeURIComponent(id)}/scope`)
+}
+
+export async function connectionScopeOptions(id) {
+  return api(`/api/connections/${encodeURIComponent(id)}/scope/options`)
+}
+
+export async function saveConnectionScope(id, scope) {
+  return api(`/api/connections/${encodeURIComponent(id)}/scope`, {
+    method: 'PUT', body: JSON.stringify({ scope }),
+  })
+}
+
+export async function absorbConnection(id) {
+  return api(`/api/connections/${encodeURIComponent(id)}/absorb`, { method: 'POST' })
+}
+
 export async function pipelineStatus(projectId) {
   return api(`/api/pipeline/status${qs({ project_id: projectId })}`)
 }
@@ -447,38 +467,51 @@ export async function saveProvider(cfg) {
 export async function testProvider(cfg) {
   return api('/api/settings/provider/test', { method: 'POST', body: JSON.stringify(cfg) })
 }
+export async function connectorCatalogue() {
+  return api('/api/connectors/catalogue')
+}
 export async function getOllamaStatus() {
   return api('/api/settings/ollama')
 }
 
-// The connectors offered at onboarding — static product data, not
-// backend-sourced, so this matches fixtures.js verbatim.
+// Grouping and ordering for the connector picker — nothing else. What each
+// connector IS (auth, description, whether it exists at all) comes from the
+// server registry at runtime; the picker merges it over these entries, and a
+// connector discovered from its own folder appears with no edit here.
 //
-// `available: false` means the card is in the catalogue but has no feeder in
-// server/connectors.py REGISTRY yet. Shown greyed rather than hidden, because
-// hiding them loses the roadmap and offering them as live leads the user
-// through a consent flow that dead-ends. GET /api/connectors/preflight is the
-// authoritative per-machine answer for the ones that ARE built.
+// Every entry below ships. Roadmap cards used to live here too, greyed out,
+// and the cost was that three Microsoft connectors nobody had written outnumbered
+// the five real ones stranded in the "More" bucket. A catalogue that lists what
+// does not exist is the thing PRODUCT.md's anti-references warn about.
 export const CONNECTOR_CATALOGUE = [
-  { group: 'Google', items: [
-    { kind: 'gdrive', name: 'Google Drive', desc: 'Docs, sheets and PDFs in your drive', auth: 'oauth' },
-    { kind: 'gchat', name: 'Google Chat', desc: 'Messages in spaces and DMs', auth: 'oauth' },
-    { kind: 'gmail', name: 'Gmail', desc: 'Email messages and their source links', auth: 'oauth' },
+  { group: 'Google', note: 'One sign-in covers all three.', items: [
+    { id: 'gdrive', kind: 'gdrive', name: 'Google Drive', desc: 'Docs, PDFs and transcripts from your folders', auth: 'oauth' },
+    { id: 'gchat', kind: 'gchat', name: 'Google Chat', desc: 'Discussions in the team spaces you belong to', auth: 'oauth' },
+    { id: 'gmail', kind: 'gmail', name: 'Gmail', desc: 'Email threads and the links inside them', auth: 'oauth' },
   ] },
-  { group: 'Microsoft', items: [
-    { kind: 'outlook', name: 'Outlook', desc: 'Mail and calendar invitations', auth: 'oauth', available: false },
-    { kind: 'onedrive', name: 'OneDrive', desc: 'Files and shared folders', auth: 'oauth', available: false },
-    { kind: 'teams', name: 'Microsoft Teams', desc: 'Channel and chat messages', auth: 'oauth', available: false },
+  { group: 'Atlassian', note: 'Separate sign-ins: the two ask for different scopes.', items: [
+    { id: 'jira', kind: 'jira', name: 'Jira', desc: 'Issues, descriptions and comments', auth: 'oauth' },
+    { id: 'confluence', kind: 'confluence', name: 'Confluence', desc: 'Wiki pages from your Cloud site', auth: 'oauth' },
   ] },
   { group: 'Code and tickets', items: [
-    { kind: 'github', name: 'GitHub', desc: 'A repo, at a snapshot or across its history', auth: 'token' },
-    { kind: 'jira', name: 'Jira', desc: 'Issues, comments and assignees', auth: 'token', available: false },
+    // Absent from the registry's catalogue on purpose (`listed=False`): a repo
+    // is not a connection, it has its own screen. Without this flag the picker
+    // reads that absence as "no feeder behind this yet".
+    { id: 'github', kind: 'github', name: 'GitHub', desc: 'A repo, at a snapshot or across its history', auth: 'token', selfManaged: true },
+    { id: 'gitlab', kind: 'gitlab', name: 'GitLab', desc: 'Repository files and project wikis', auth: 'token' },
+    { id: 'ghissues', kind: 'ghissues', name: 'GitHub Issues', desc: 'Issues and comments from a repository', auth: 'token' },
   ] },
-  { group: 'Web', items: [
-    { kind: 'links', name: 'Web pages', desc: 'Extract text from a list of website URLs', auth: 'none' },
+  { group: 'Docs and chat', items: [
+    { id: 'notion', kind: 'notion', name: 'Notion', desc: 'Pages shared with your integration', auth: 'token' },
+    { id: 'slack', kind: 'slack', name: 'Slack', desc: 'Channel history from a workspace you belong to', auth: 'token' },
+  ] },
+  { group: 'Web and files', note: 'No account behind either.', items: [
+    { id: 'upload', kind: 'upload', name: 'Upload', desc: 'Files or a folder added by hand', auth: 'none' },
+    { id: 'links', kind: 'links', name: 'Web pages', desc: 'Pages and PDFs referenced inside what you already synced', auth: 'none' },
   ] },
   { group: 'Advanced', advanced: true, items: [
-    { kind: 'whatsapp', name: 'WhatsApp', desc: 'Opt-in only — pairs a browser session', auth: 'browser' },
+    { id: 'whatsapp', kind: 'browser', name: 'WhatsApp', desc: 'Opt-in only — pairs a browser session', auth: 'browser' },
+    { id: 'linkedin', kind: 'browser', name: 'LinkedIn', desc: 'Opt-in only — configured message threads', auth: 'browser' },
   ] },
 ]
 

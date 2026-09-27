@@ -20,7 +20,7 @@ import { ConnectorIcon } from '@/components/ConnectorIcon'
 //   onConnected    ({ kind, projectId, mode, granularity }) => void — fires once, when the
 //                  flow finishes (GitHub: after the history choice; everything else: on success)
 //   onCancel       () => void
-//   onAuthorize    optional ({ kind, projectId }) => Promise — the REAL provider navigation.
+//   onAuthorize    optional ({ id, kind, projectId }) => Promise — the REAL provider navigation.
 //                  Absent (fixtures), the hand-off is simulated; ?force=error makes it fail.
 
 const TOKEN_HELP = {
@@ -33,16 +33,16 @@ const groupOf = (kind) => api.CONNECTOR_CATALOGUE.find((g) => g.items.some((i) =
 function Field({ id, label, hint, type = 'text', value, onChange, placeholder }) {
   return (
     <div>
-      <label htmlFor={id} className="mb-1.5 block text-[12px] text-muted-foreground">{label}</label>
+      <label htmlFor={id} className="mb-1.5 block text-xs text-muted-foreground">{label}</label>
       <input
         id={id} type={type} value={value} placeholder={placeholder}
         onChange={(e) => onChange(e.target.value)}
         className={cn(
-          'w-full rounded-lg border border-border bg-card px-2.5 py-2 text-[13.5px] outline-none focus:border-primary',
-          type === 'password' && 'font-mono text-[13px]',
+          'w-full rounded-lg border border-border bg-card px-2.5 py-2 text-sm outline-none focus:border-primary',
+          type === 'password' && 'font-mono text-sm',
         )}
       />
-      {hint && <p className="mt-1.5 text-[11.5px] text-muted-foreground">{hint}</p>}
+      {hint && <p className="mt-1.5 text-xs text-muted-foreground">{hint}</p>}
     </div>
   )
 }
@@ -58,13 +58,26 @@ export function ConnectFlow({
   const [email, setEmail] = useState('')
   const [urls, setUrls] = useState('')
   const [maxItems, setMaxItems] = useState('20')
+  // What this connector says it needs. Declared by the backend registry, so a
+  // new token connector ships without touching this file.
+  const [declared, setDeclared] = useState([])
+  const [values, setValues] = useState({})
   const aliveRef = useRef(true)
   const timerRef = useRef(null)
 
-  const { kind, name, desc, auth } = connector
+  // `id` identifies the connector, `kind` is what its connections are.
+  const { id, kind, name, desc, auth } = connector
   const group = groupOf(kind)
-  const provider = group && !group.advanced && group.items.length > 1 ? group.group : name
-  const reconsent = auth === 'oauth' && group?.items.some((i) => i.kind !== kind && connectedKinds.includes(i.kind))
+  // A group name only stands in for the provider when ONE consent really does
+  // cover the whole group, which is Google and nothing else — "Code and
+  // tickets" holds GitHub and Jira, which share no sign-in, so naming it as
+  // the provider both mislabelled the button and claimed a GitHub repo had
+  // already signed the user in to Jira.
+  const shared = group && !group.advanced && group.items.length > 1
+    && group.items.every((i) => i.auth === 'oauth')
+  const provider = shared ? group.group : name
+  const reconsent = auth === 'oauth' && shared
+    && group.items.some((i) => i.kind !== kind && connectedKinds.includes(i.kind))
 
   // Reset on every (re)mount — under StrictMode's dev-only mount->cleanup->
   // remount cycle, a setup that only returns a cleanup never flips this back
@@ -80,11 +93,24 @@ export function ConnectFlow({
   // half-typed token or its error.
   useEffect(() => {
     setStatus('form'); setFailure(null); setToken(''); setSite(''); setEmail(''); setUrls(''); setMaxItems('20')
+    setValues({})
+  }, [kind])
+
+  useEffect(() => {
+    let cancelled = false
+    api.connectorCatalogue?.()
+      .then((rows) => {
+        if (cancelled) return
+        setDeclared(rows.find((r) => r.id === kind)?.fields ?? [])
+      })
+      .catch(() => !cancelled && setDeclared([]))
+    return () => { cancelled = true }
   }, [kind])
 
   const wait = (ms) => new Promise((resolve) => { timerRef.current = setTimeout(resolve, ms) })
 
-  const ready = kind === 'github'
+  const declaredReady = declared.every((f) => !f.required || (values[f.name] ?? '').trim())
+  const ready = declared.length ? declaredReady : kind === 'github'
     ? site.trim().length > 0
     : kind === 'jira'
       ? Boolean(site.trim() && email.trim() && token.trim())
@@ -100,7 +126,8 @@ export function ConnectFlow({
         if (kind === 'links' && parsedUrls.some((url) => {
           try { return !['http:', 'https:'].includes(new URL(url).protocol) } catch { return true }
         })) throw new Error('Enter complete http:// or https:// URLs, one per line.')
-        connected = await onAuthorize({ kind, projectId, token, site, email, urls: parsedUrls, maxItems })
+        connected = await onAuthorize({ id: id ?? kind, kind, projectId, token, site, email,
+                                        urls: parsedUrls, maxItems, config: values })
       } else {
         if (api.isLive) throw new Error('The provider hand-off is not wired to the backend yet.')
         await wait(reconsent ? 350 : 900)
@@ -125,8 +152,8 @@ export function ConnectFlow({
           <ConnectorIcon kind={kind} size={16} />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[13.5px] font-semibold">Connect {name}</div>
-          {desc && <div className="truncate text-[11.5px] text-muted-foreground">{desc}</div>}
+          <div className="truncate text-sm font-semibold">Connect {name}</div>
+          {desc && <div className="truncate text-xs text-muted-foreground">{desc}</div>}
         </div>
         {onCancel && status !== 'connecting' && (
           <Button variant="ghost" size="xs" className="text-muted-foreground" onClick={onCancel}>Cancel</Button>
@@ -136,29 +163,29 @@ export function ConnectFlow({
       {/* Every flow asks which project the connection belongs to (spec §6). */}
       {status === 'form' || status === 'error' ? (
         <div className="pb-3">
-          <label htmlFor="connect-project" className="mb-1.5 block text-[12px] text-muted-foreground">
+          <label htmlFor="connect-project" className="mb-1.5 block text-xs text-muted-foreground">
             Which project does this connection belong to?
           </label>
           <select
             id="connect-project" value={projectId ?? ''} onChange={(e) => onProjectId?.(e.target.value)}
-            className="w-full rounded-lg border border-border bg-card px-2.5 py-2 text-[13.5px] outline-none focus:border-primary"
+            className="w-full rounded-lg border border-border bg-card px-2.5 py-2 text-sm outline-none focus:border-primary"
           >
             {projects.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </div>
       ) : (
-        <p className="pb-3 text-[12px] text-muted-foreground">Belongs to {projectLine}.</p>
+        <p className="pb-3 text-xs text-muted-foreground">Belongs to {projectLine}.</p>
       )}
 
       {status === 'connecting' && (
-        <div className="flex items-center gap-2 py-1 text-[13px] text-muted-foreground">
+        <div className="flex items-center gap-2 py-1 text-sm text-muted-foreground">
           <Spinner className="size-3.5" />
           Connecting…
         </div>
       )}
 
       {status === 'done' && (
-        <div className="flex items-center gap-2 py-1 text-[13px] text-success">
+        <div className="flex items-center gap-2 py-1 text-sm text-success">
           <Check size={14} aria-hidden />
           Connected — the first sync is starting.
         </div>
@@ -168,14 +195,14 @@ export function ConnectFlow({
         <>
           {auth === 'oauth' && (
             <div className="flex flex-col gap-2.5">
-              <p className="text-[13px] leading-relaxed text-muted-foreground">
+              <p className="text-sm leading-relaxed text-muted-foreground">
                 {reconsent
                   ? `You’re already signed in to ${provider}. This is a one-click re-consent — ${name} just gets added to the access you already granted.`
                   : `You’ll finish this on ${provider}’s own sign-in page, in this browser. We never see your password, and nothing is read until you approve it there.`}
               </p>
               <label className="flex max-w-xs flex-col gap-1.5 text-xs text-muted-foreground">Maximum items per sync
                 <input type="number" min="1" max="10000" value={maxItems} placeholder="No limit"
-                  onChange={(e) => setMaxItems(e.target.value)} className="rounded-md border border-border bg-background px-2.5 py-2 text-[13px] text-foreground" />
+                  onChange={(e) => setMaxItems(e.target.value)} className="rounded-md border border-border bg-background px-2.5 py-2 text-sm text-foreground" />
                 <span>Start with 20 items to inspect extraction before a larger import. Clear for no limit.</span>
               </label>
               <div>
@@ -190,7 +217,7 @@ export function ConnectFlow({
           {kind === 'links' && <div className="flex flex-col gap-3">
             <label className="flex flex-col gap-1.5 text-xs text-muted-foreground">Website URLs, one per line
               <textarea rows={5} value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="https://example.com/article"
-                className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-[13px] text-foreground outline-none focus:border-primary" />
+                className="w-full resize-y rounded-lg border border-border bg-background px-3 py-2 font-mono text-sm text-foreground outline-none focus:border-primary" />
             </label>
             <p className="text-xs text-muted-foreground">Cairn fetches each page and stores its extracted text. Review the files before absorption, or enable automation in Pipeline.</p>
             <div><Button size="sm" disabled={!ready} onClick={connect}>Connect and fetch pages</Button></div>
@@ -198,7 +225,7 @@ export function ConnectFlow({
 
           {auth === 'browser' && (
             <div className="flex flex-col gap-2.5">
-              <p className="text-[13px] leading-relaxed text-muted-foreground">
+              <p className="text-sm leading-relaxed text-muted-foreground">
                 WhatsApp pairs a browser session on this machine — you scan a code from your
                 phone, the way WhatsApp Web does. Nothing is pulled until the pairing holds.
               </p>
@@ -206,7 +233,21 @@ export function ConnectFlow({
             </div>
           )}
 
-          {kind === 'github' && (
+          {declared.length > 0 && (
+            <div className="flex flex-col gap-3">
+              {declared.map((f) => (
+                <Field
+                  key={f.name} id={`${kind}-${f.name}`} label={f.label}
+                  type={f.secret ? 'password' : 'text'} placeholder={f.placeholder}
+                  value={values[f.name] ?? ''}
+                  onChange={(v) => setValues((prev) => ({ ...prev, [f.name]: v }))}
+                />
+              ))}
+              <div><Button size="sm" disabled={!ready} onClick={connect}>Connect</Button></div>
+            </div>
+          )}
+
+          {declared.length === 0 && kind === 'github' && (
             <div className="flex flex-col gap-3">
               <Field id="github-repo" label="Repository URL" value={site} onChange={setSite} placeholder="https://github.com/owner/repo" />
               <Field
@@ -218,7 +259,7 @@ export function ConnectFlow({
                 <Button size="sm" disabled={!ready} onClick={connect}>Connect</Button>
                 <a
                   href={TOKEN_HELP.github.href} target="_blank" rel="noreferrer"
-                  className="text-[12px] text-primary hover:underline"
+                  className="text-xs text-primary hover:underline"
                 >
                   {TOKEN_HELP.github.label}
                 </a>
@@ -226,22 +267,6 @@ export function ConnectFlow({
             </div>
           )}
 
-          {kind === 'jira' && (
-            <div className="flex flex-col gap-3">
-              <Field id="jira-site" label="Jira site URL" value={site} onChange={setSite} placeholder="yourteam.atlassian.net" />
-              <Field id="jira-email" label="Account email" type="email" value={email} onChange={setEmail} placeholder="you@yourteam.com" />
-              <Field id="jira-token" label="API token" type="password" value={token} onChange={setToken} placeholder="paste your token" />
-              <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" disabled={!ready} onClick={connect}>Connect</Button>
-                <a
-                  href={TOKEN_HELP.jira.href} target="_blank" rel="noreferrer"
-                  className="text-[12px] text-primary hover:underline"
-                >
-                  {TOKEN_HELP.jira.label}
-                </a>
-              </div>
-            </div>
-          )}
         </>
       )}
 
@@ -249,8 +274,8 @@ export function ConnectFlow({
         <div className="mt-3 flex items-start gap-2 rounded-lg border border-destructive/40 p-2.5">
           <TriangleAlert size={14} className="mt-0.5 shrink-0 text-destructive" aria-hidden />
           <div className="min-w-0 flex-1">
-            <div className="text-[13px] text-destructive">Couldn’t connect — try again.</div>
-            {failure && <div className="text-[11.5px] text-muted-foreground">{failure}</div>}
+            <div className="text-sm text-destructive">Couldn’t connect — try again.</div>
+            {failure && <div className="text-xs text-muted-foreground">{failure}</div>}
           </div>
           <Button
             variant="outline" size="xs" className="border-destructive/60 text-destructive"

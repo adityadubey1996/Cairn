@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib
 import json
 import subprocess
 import sys
@@ -112,6 +113,32 @@ def _github(urls: list[str], limit: int) -> dict:
     return {"items": items, "more_available": len(urls) > limit}
 
 
+def _own_probe(kind: str, limit: int) -> dict:
+    """Call the connector's own probe(settings, limit).
+
+    Settings come from its newest connection when it has one, so a pasted token
+    or a completed sign-in is used exactly as a real sync would use it.
+    """
+    spec = next(c for c in connectors.REGISTRY if c.id == kind)
+    module = importlib.import_module(spec.module)
+    probe = getattr(module, "probe", None)
+    if probe is None:
+        return {"note": f"{kind} ships no probe(); run a sync to exercise it"}
+    settings: dict = {}
+    try:
+        from server import connections
+        from server.db import connect
+        with connect() as c:
+            row = c.execute(
+                "SELECT id FROM brain_connector_connections WHERE kind = %s "
+                "ORDER BY created_at DESC LIMIT 1", (kind,)).fetchone()
+        if row:
+            settings = connections.settings_for(row["id"])
+    except Exception:
+        pass  # no database, or no connection yet: probe with what the env gives
+    return probe(settings, limit)
+
+
 def check(kind: str, *, live: bool, limit: int = 3, extract: bool = False,
           urls: list[str] | None = None, query: str | None = None) -> dict:
     row = next(item for item in connectors.preflight() if item["id"] == kind)
@@ -143,8 +170,13 @@ def check(kind: str, *, live: bool, limit: int = 3, extract: bool = False,
             result = {"session_status": state["status"]}
             if state["status"] != "logged_in":
                 output["status"] = state["status"]
-        else:
+        elif kind == "upload":
             result = {"note": "Uploads need no provider account; staged extraction is tested during sync."}
+        else:
+            # A connector that ships its own probe() checks itself. That is what
+            # lets a new connector be added as a folder alone, with no edit here
+            # — see feeders/_template/sync.py.
+            result = _own_probe(kind, limit)
         output.update(result)
         if output["status"] == "configured":
             output["status"] = "ok"

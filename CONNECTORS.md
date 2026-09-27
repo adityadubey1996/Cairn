@@ -34,11 +34,28 @@ Every connector reports `ready`, the env vars still `missing`, and a one-line
 | **Gmail** | implemented; complete email threads | Google OAuth + Gmail API + mail consent |
 | **WhatsApp** | browser integration; requires live login | Steel browser + group titles |
 | **LinkedIn** | browser integration; requires live login | Steel browser + thread URLs |
+| **Jira** | works | your own Atlassian 3LO app · `ATLASSIAN_CLIENT_ID` · [SETUP](feeders/jira/SETUP.md) |
+| **Confluence** | works | the same kind of Atlassian 3LO app · `CONFLUENCE_CLIENT_ID` + `CONFLUENCE_CLIENT_SECRET` · [SETUP](feeders/confluence/SETUP.md) |
+| **Slack** | works | your own Slack app's client ID + secret, then one sign-in · [SETUP](feeders/slack/SETUP.md) |
+| **Notion** | works | an internal integration secret, and pages shared with it · [SETUP](feeders/notion/SETUP.md) |
+| **GitLab** (issues + MRs) | works | a `read_api` personal access token · [SETUP](feeders/gitlab/SETUP.md) |
+| **GitHub issues** (issues + PR threads) | works | a fine-grained PAT, read-only · [SETUP](feeders/ghissues/SETUP.md) |
 | Outlook · OneDrive · Teams | **not built** | — |
-| Jira · Slack · Confluence | **not built** | — |
 
 The unbuilt integrations have no feeder in `REGISTRY`. Their presence in a
 catalogue is a roadmap entry, not a working connection.
+
+Jira, Confluence, Slack, Notion, GitLab and GitHub issues each ship as a
+self-contained `feeders/<name>/` folder and join `REGISTRY` through the folder
+discovery at the bottom of [server/connectors.py](server/connectors.py) rather
+than through the list above it. `/api/connectors/preflight` is the authority on
+what is actually loaded on your install.
+
+Four of these register a **redirect URL** at the provider, and it carries the
+port Cairn is served on — which differs between running from source and running
+under Docker. Each SETUP.md has a *redirect URL* section covering every run mode
+and the exact error the provider returns on a mismatch. Read it before pasting
+anything into a provider console.
 
 The Gmail adapter follows the complete-thread boundary studied in
 [Onyx's Gmail connector](https://github.com/onyx-dot-app/onyx/blob/main/backend/onyx/connectors/gmail/connector.py),
@@ -50,6 +67,10 @@ provider still needs implementation and testing in this repository.
 ---
 
 ## Google Drive, Google Chat and Gmail
+
+> **Step-by-step with screenshots and video:**
+> [feeders/google/SETUP.md](feeders/google/SETUP.md). You do **not** need a
+> service account — Cairn signs in as you.
 
 One OAuth client and one consent cover these Google integrations. Scopes are read-only throughout:
 the token cannot write, delete, send or post.
@@ -70,16 +91,21 @@ or completing the Google publishing requirements for your application.
 
 **4. Create the client** — *Credentials → Create credentials → OAuth client ID*:
 - Application type: **Web application**
-- Authorised redirect URI, copied exactly for the way Cairn runs:
+- Authorised redirect URIs — register **both**, not just today's:
 
 ```
-Source: http://localhost:8300/api/google/callback
-Docker: http://localhost:8301/api/google/callback
+http://localhost:8300/api/google/callback
+http://localhost:8301/api/google/callback
 ```
 
-The selected URI is an external contract registered byte for byte. Add its
-matching origin without the callback path. If you run Cairn on a different
-port, register that port instead and keep the path identical.
+8300 is running from source on the default `PORT`; 8301 is `docker compose`,
+which publishes the container's 8300 on host 8301. Google allows many redirect
+URIs on one client, and registering both now is what stops the setup breaking
+the first time you switch. Each is matched byte for byte — scheme, case and
+trailing slash included — and a mismatch fails with `redirect_uri_mismatch`. On
+a custom `PORT`, add that port too and keep the path identical. Full rules,
+including `localhost` versus `127.0.0.1`, are in
+[feeders/google/SETUP.md](feeders/google/SETUP.md).
 
 **5. Put the client in `.env`:**
 

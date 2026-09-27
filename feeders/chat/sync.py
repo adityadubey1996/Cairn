@@ -410,7 +410,17 @@ def run(created_after: str = "", project_id: str | None = None,
     seen = written = 0
     failures = []
     truncated = False
-    spaces = list_spaces()
+    settings = {}
+    if connection_id:
+        # Scope only narrows; it can never be the reason a sync fails. A
+        # connection_id is also passed for attribution alone (a hand run, a
+        # test), so an id with no row behind it means no scope, not an error.
+        try:
+            from server import connections
+            settings = connections.settings_for(connection_id)
+        except Exception:
+            log.debug("no stored settings for %s; syncing unscoped", connection_id)
+    spaces = scoped_spaces(settings.get("scope"))
     for n, space in enumerate(spaces, 1):
         if max_items and (seen >= max_items or n > max_items):
             truncated = True
@@ -527,3 +537,46 @@ def run(created_after: str = "", project_id: str | None = None,
         failures.append(failure("gchat-backlog", "Google Chat sample",
                                 f"max_items={max_items} left days, spaces or attachments unsynced; watermark unchanged"))
     return SyncResult(seen, written, failures)
+
+
+# --------------------------------------------------------------------- scope
+# Spaces, split by whether Google made them or a person did. Meeting spaces are
+# listed separately because most hold one short conversation and there are
+# usually far more of them — syncing all of them buries the team spaces the
+# wiki is actually for.
+
+MEETING_SPACE_TYPES = ("MEETING", "HUDDLE")
+
+
+def _is_meeting_space(space: dict) -> bool:
+    if space.get("spaceType") in MEETING_SPACE_TYPES:
+        return True
+    # Meet names an auto-created space after the call, and marks it externally
+    # user-allowed far more often than a team space. The name check is the
+    # reliable half; treat anything else as a team space rather than hiding it.
+    return bool(space.get("externalUserAllowed")) and not space.get("displayName")
+
+
+def list_space_options(_settings: dict | None = None) -> list[dict]:
+    groups = {"team": {"id": "team", "name": "Team spaces",
+                       "note": "created by a person", "items": []},
+              "meeting": {"id": "meeting", "name": "Meeting spaces",
+                          "note": "created automatically by Google Meet", "items": []}}
+    for space in list_spaces():
+        target = "meeting" if _is_meeting_space(space) else "team"
+        groups[target]["items"].append({
+            "id": space["name"],
+            "name": space.get("displayName") or space["name"],
+            "detail": str(space.get("membershipCount", {}).get("joinedDirectHumanUserCount") or ""),
+        })
+    for group in groups.values():
+        group["items"].sort(key=lambda s: s["name"].lower())
+    return [g for g in groups.values() if g["items"]]
+
+
+def scoped_spaces(scope: dict | None) -> list[dict]:
+    """The spaces this connection reads. No scope means every named space,
+    which is what this feeder did before scope existed."""
+    spaces = list_spaces()
+    chosen = set((scope or {}).get("items") or ())
+    return [s for s in spaces if s["name"] in chosen] if chosen else spaces

@@ -52,7 +52,7 @@ export function ContentResults({ projectId, q, kind = null, onOpen, className })
 
   return (
     <div className={className}>
-      <div className="pb-1 text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+      <div className="pb-1 text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
         {rows.length}{rows.length === 30 ? '+' : ''} inside file contents
       </div>
       {rows.map((row) => <SourceResultRow key={row.id} row={row} onOpen={onOpen} />)}

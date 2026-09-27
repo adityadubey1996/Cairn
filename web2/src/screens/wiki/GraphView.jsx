@@ -163,7 +163,7 @@ export function GraphView({ nodes, edges, selected, onSelect }) {
     return next
   })
 
-  const legendButton = 'flex items-center gap-1.5 rounded-full border border-border bg-card px-2 py-px text-[11px] hover:border-primary'
+  const legendButton = 'flex items-center gap-1.5 rounded-full border border-border bg-card px-2 py-px text-xs hover:border-primary'
 
   return (
     <div className="relative min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-background">

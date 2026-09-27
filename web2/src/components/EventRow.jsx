@@ -51,7 +51,7 @@ export function EventRow({ event, variant = 'timeline', className, expanded, onT
         <div className="min-w-0 flex-1">
           {person && (
             <div className="mb-0.5 flex items-center gap-2">
-              <span className="rounded-full border border-border px-1.5 text-[10.5px] uppercase tracking-[0.03em] text-muted-foreground">
+              <span className="rounded-full border border-border px-1.5 text-xs uppercase tracking-[0.03em] text-muted-foreground">
                 {event.role}
               </span>
               <RoleIcon size={11} className="text-muted-foreground" aria-hidden />
@@ -61,7 +61,7 @@ export function EventRow({ event, variant = 'timeline', className, expanded, onT
           {onToggle ? (
             <button
               type="button" onClick={onToggle} aria-expanded={!!expanded}
-              className="flex w-full items-start gap-1.5 text-left text-[13.5px] hover:text-primary"
+              className="flex w-full items-start gap-1.5 text-left text-sm hover:text-primary"
             >
               <ChevronRight
                 size={12} aria-hidden
@@ -71,7 +71,7 @@ export function EventRow({ event, variant = 'timeline', className, expanded, onT
               <span>{event.text}</span>
             </button>
           ) : (
-            <div className="text-[13.5px]">{event.text}</div>
+            <div className="text-sm">{event.text}</div>
           )}
 
           {chips.length > 0 && (
@@ -79,7 +79,7 @@ export function EventRow({ event, variant = 'timeline', className, expanded, onT
               {chips.map((p) => (
                 <span
                   key={p.name}
-                  className="rounded-full border border-border px-1.5 py-px text-[10.5px] text-muted-foreground"
+                  className="rounded-full border border-border px-1.5 py-px text-xs text-muted-foreground"
                 >
                   <span className="text-foreground/80">{p.name}</span>{' '}{p.detail}
                   {p.seconds != null && ` · ${p.seconds}s`}

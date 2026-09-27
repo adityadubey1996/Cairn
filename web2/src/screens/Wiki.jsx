@@ -5,6 +5,7 @@ import { forcedState } from '@/lib/devState'
 import { cn } from '@/lib/utils'
 import { useNarrow } from '@/Shell'
 import { Button } from '@/components/ui/button'
+import { PageHeader } from '@/components/PageHeader'
 import { SubTabNav } from '@/components/TabNav'
 import { ArticleList } from './wiki/ArticleList'
 import { GraphView } from './wiki/GraphView'
@@ -88,7 +89,7 @@ export function Wiki({ projectId, projectName, target, onNavigate }) {
   const pane = (
     <>
       <div className="flex items-center justify-between gap-2 pb-2">
-        <span className="px-1 text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+        <span className="px-1 text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
           Articles<span className="ml-1 opacity-70">{data.nodes.length}</span>
         </span>
         <SubTabNav tabs={VIEWS} value={view} onChange={setView} />
@@ -105,7 +106,19 @@ export function Wiki({ projectId, projectName, target, onNavigate }) {
   )
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <PageHeader
+        title="Wiki"
+        subtitle={`Durable articles absorbed from ${projectName ?? 'this project'}, with every source they were built on.`}
+        actions={narrow && (
+          <Button variant="outline" size="sm" onClick={() => setSheetOpen(true)}>
+            <PanelLeft size={13} aria-hidden />
+            Articles<span className="text-muted-foreground">{data.nodes.length}</span>
+          </Button>
+        )}
+      />
+
+      <div className="flex min-h-0 flex-1">
       <aside
         className={cn(
           'hidden shrink-0 flex-col border-r border-border bg-background p-2.5 md:flex',
@@ -116,16 +129,8 @@ export function Wiki({ projectId, projectName, target, onNavigate }) {
       </aside>
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-2.5 px-5 pt-4 md:hidden">
-          <Button variant="outline" size="sm" onClick={() => setSheetOpen(true)}>
-            <PanelLeft size={13} aria-hidden />
-            Articles<span className="text-muted-foreground">{data.nodes.length}</span>
-          </Button>
-          <span className="truncate text-[12.5px] text-muted-foreground">{projectName ?? '—'}</span>
-        </header>
-
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <div className="mx-auto w-full max-w-[860px]">
+          <div className="mx-auto w-full max-w-(--reading-width)">
             <Reader
               path={selected}
               projectId={projectId}
@@ -139,6 +144,7 @@ export function Wiki({ projectId, projectName, target, onNavigate }) {
             />
           </div>
         </div>
+      </div>
       </div>
 
       {narrow && sheetOpen && (

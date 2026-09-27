@@ -11,7 +11,7 @@ export function GradeBadgePills({ grades = {}, className }) {
         <span
           key={label}
           title={`${grades[label] ?? 0} ${label}`}
-          className="rounded-full border border-border px-2 py-0.5 text-[11px] text-muted-foreground"
+          className="rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground"
         >
           {label} <b className="font-semibold text-foreground tabular-nums">{grades[label] ?? 0}</b>
         </span>

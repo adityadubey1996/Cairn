@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import * as api from '@/api'
 import { forcedState } from '@/lib/devState'
+import { PageHeader } from '@/components/PageHeader'
 import { SubTabNav } from '@/components/TabNav'
 import { Health } from './connect/Health'
 import { Sources } from './connect/Sources'
@@ -41,20 +42,17 @@ export function Connect({ projectId, projectName, onNavigate, target }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="px-6 pt-5">
-        <h1 className="text-[20px] font-semibold tracking-[-0.02em]">Connections</h1>
-        <p className="mt-0.5 text-[12.5px] text-muted-foreground">
-          Manage what enters {projectName ?? 'this project'} and where it goes next.
-        </p>
-      </header>
+      <PageHeader
+        title="Connections"
+        subtitle={`Manage what enters ${projectName ?? 'this project'} and where it goes next.`}
+      >
+        {/* Deliberately lighter than the sidebar's TabNav, and scrolling rather
+            than wrapping so the five views stay on one line at tablet width. */}
+        <SubTabNav className="mt-3" tabs={SUB_TABS} value={sub} onChange={setSub} />
+      </PageHeader>
 
-      {/* Deliberately lighter than the sidebar's TabNav, and scrolling rather
-          than wrapping so the four views stay on one line at tablet width. */}
-      <div className="px-6 pt-3">
-        <SubTabNav tabs={SUB_TABS} value={sub} onChange={setSub} />
-      </div>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-4 pb-8">
+      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-5 pb-8">
+        <div className="mx-auto w-full max-w-(--page-width)">
         {sub === 'health' && (
           <Health
             projectId={projectId} projectName={projectName}
@@ -66,6 +64,7 @@ export function Connect({ projectId, projectName, onNavigate, target }) {
         {sub === 'timeline' && <Timeline projectId={projectId} projectName={projectName} forced={forced} />}
         {sub === 'cost' && <Cost onGoHealth={() => setSub('health')} />}
         {sub === 'pipeline' && <Pipeline projectId={projectId} onNavigate={onNavigate} />}
+        </div>
       </div>
     </div>
   )

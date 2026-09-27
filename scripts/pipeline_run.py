@@ -34,8 +34,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from server import config, pipeline_runs as runs, storage  # noqa: E402
+from server.connectors import REGISTRY  # noqa: E402
 
-CONNECTORS = ("gdrive", "gchat", "gmail", "links", "whatsapp", "linkedin", "upload", "github")
+CONNECTORS = tuple(c.id for c in REGISTRY)
 
 # What each feeder calls its watermark. The names differ because the APIs do:
 # Drive filters on the file's modifiedTime, Chat on the message's createTime.
@@ -44,15 +45,7 @@ SINCE_ARG = {"gdrive": "modified_after", "gchat": "created_after", "gmail": "mod
 
 # Keys are connector ids, which are also the sources/<id>/ subdirectory names
 # units_for() selects on — so a new entry needs no other change here.
-FEEDER = {
-    "gdrive": "feeders.gdrive.sync",
-    "gchat": "feeders.chat.sync",
-    "gmail": "feeders.gmail.sync",
-    "links": "feeders.links.sync",
-    "whatsapp": "feeders.whatsapp.sync",
-    "linkedin": "feeders.linkedin.sync",
-    "upload": "feeders.upload.sync",
-}
+FEEDER = {c.id: c.module for c in REGISTRY if c.id != "github"}
 
 # Above the ~11M a full Drive plus Chat sweep is expected to need. A runaway
 # guard, not a per-run budget the operator is meant to tune.
@@ -292,14 +285,26 @@ def _absorb_has_token_ceiling() -> bool:
 
 
 def phase_absorb(run_id: str, ids: list[str], max_tokens: int,
-                 project_id: str = "", automatic: bool = False) -> dict:
+                 project_id: str = "", automatic: bool = False,
+                 limit: int = 0) -> dict:
     """Absorb exactly `ids`. The caller decides what they are: a connector run
     passes units_for(_pending_text(), connector), a wiki write-up passes the
-    ids a human ticked in the Sources list."""
+    ids a human ticked in the Sources list.
+
+    `limit` is the connection's per-run unit budget. Applied AFTER eligibility
+    so the budget counts units that would really be written, and the unspent
+    remainder stays queued for the next run rather than being dropped.
+    """
     t0 = time.monotonic()
     if project_id:
         from server import sources
         ids = sources.eligible(project_id, ids, automatic=automatic)
+    if limit and len(ids) > limit:
+        # sources.queued() hands them over oldest mark first, so a budget takes
+        # the longest-waiting units rather than an arbitrary slice.
+        held = len(ids) - limit
+        ids = ids[:limit]
+        runs.log(run_id, [f"budget: absorbing {limit} unit(s); {held} stay queued"])
     runs.begin_phase(run_id, "absorb", total=len(ids))
     if not ids:
         record = {"seen": 0, "written": 0, "seconds": 0.0,
@@ -494,6 +499,8 @@ def main() -> int:
                     help="which project the scraped units belong to "
                          "(default: the default project, for hand and cron runs)")
     ap.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
+    ap.add_argument("--absorb-limit", type=int, default=0,
+                    help="most units one run may absorb; 0 for the whole queue")
     ap.add_argument("--since", default="",
                     help="RFC3339 watermark; fetch only what changed after it.")
     ap.add_argument("--full", action="store_true",
@@ -548,7 +555,8 @@ def main() -> int:
             # the last scrape queued. That is what lets a file scraped last
             # month be written up on demand.
             phase_ingest(run_id, 'wiki', project_id)
-            result = phase_absorb(run_id, a.only_source, a.max_tokens, project_id)
+            result = phase_absorb(run_id, a.only_source, a.max_tokens, project_id,
+                                  limit=a.absorb_limit)
             phase_push(run_id)
             from server import corpus
             corpus.sync()
@@ -599,7 +607,8 @@ def main() -> int:
             from server import sources, corpus
             ids = sources.auto_candidates(project_id, a.connection_id, a.connector)
             sources.set_queued(project_id, ids, True)
-            result = phase_absorb(run_id, ids, a.max_tokens, project_id, automatic=True)
+            result = phase_absorb(run_id, ids, a.max_tokens, project_id, automatic=True,
+                                  limit=a.absorb_limit)
             corpus.sync()
             phase_push(run_id)
         _check_cancel()

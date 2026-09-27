@@ -1,7 +1,7 @@
 import { cn } from '@/lib/utils'
 
 // Initials only — this product has no photo upload.
-const SIZES = { sm: 'size-7 text-[11px]', md: 'size-8.5 text-xs', lg: 'size-10 text-sm' }
+const SIZES = { sm: 'size-7 text-xs', md: 'size-8.5 text-xs', lg: 'size-10 text-sm' }
 
 export function PersonAvatar({ name, initials, size = 'sm', className }) {
   const text = initials

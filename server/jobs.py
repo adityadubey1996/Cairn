@@ -22,9 +22,12 @@ _last_tick: datetime | None = None
 
 def submit(connector: str, project_id: str, *, connection_id: str = '',
            absorb: bool = False, full: bool = False, ids: list[str] | None = None,
-           repo_step: str = '', options: dict | None = None) -> dict:
+           repo_step: str = '', options: dict | None = None,
+           budget: dict | None = None) -> dict:
     job = dict(connector=connector, project_id=project_id, connection_id=connection_id,
                absorb=absorb, full=full, ids=ids or [])
+    if budget:
+        job['budget'] = budget
     if repo_step:
         job.update(repo_step=repo_step, options=options or {})
     with connect() as c:
@@ -89,6 +92,37 @@ def _schedule() -> None:
                 c.execute('DELETE FROM brain_connection_policies WHERE connection_id=%s', (row['connection_id'],))
         except Exception:
             log.exception('scheduled sync failed for %s', row['connection_id'])
+    _schedule_absorb()
+
+
+def _schedule_absorb() -> None:
+    """Absorbing on its own clock: sync through the day, write up the queue at
+    02:00. Separate from the sync loop above because the two answer different
+    questions — one is free, the other is the only step that spends the model.
+
+    Not gated on sync_enabled: a connection synced by hand still deserves to
+    have its queue drained on a schedule.
+    """
+    from . import automation, connections
+    with connect() as c:
+        rows = c.execute("SELECT * FROM brain_connection_policies "
+                         "WHERE absorb_trigger = 'schedule' AND absorb_next_run_at <= now() "
+                         'ORDER BY absorb_next_run_at').fetchall()
+    for row in rows:
+        try:
+            connections.absorb(row['connection_id'])
+        except Exception:
+            log.exception('scheduled absorb failed for %s', row['connection_id'])
+        finally:
+            # Advanced whatever happened: a failure that left the time in the
+            # past would re-fire every tick.
+            try:
+                with connect() as c:
+                    c.execute('UPDATE brain_connection_policies SET absorb_next_run_at=%s '
+                              'WHERE connection_id=%s',
+                              (automation.next_absorb_time(row), row['connection_id']))
+            except Exception:
+                log.exception('could not advance absorb schedule for %s', row['connection_id'])
 
 
 def tick() -> None:
@@ -157,6 +191,13 @@ def _arguments(job: dict, rid: str) -> list[str]:
             args.append('--skip-absorb')
         if job.get('full'):
             args.append('--full')
+    # The plan's ceilings, handed to the process that actually spends them. A
+    # budget kept only in the database would be a number on a screen.
+    budget = job.get('budget') or {}
+    if budget.get('max_tokens'):
+        args += ['--max-tokens', str(budget['max_tokens'])]
+    if budget.get('limit_units'):
+        args += ['--absorb-limit', str(budget['limit_units'])]
     return args
 
 

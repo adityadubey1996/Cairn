@@ -5,6 +5,7 @@ import { forcedState } from '@/lib/devState'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { ModeToggle } from '@/components/ModeToggle'
+import { PageHeader } from '@/components/PageHeader'
 import { AskThread } from './chat/AskThread'
 import { ConversationList } from './chat/ConversationList'
 import { SearchPane } from './chat/SearchPane'
@@ -125,19 +126,21 @@ export function Chat({ projectId, projectName, onNavigate }) {
   const local = provider?.preset === 'ollama'
   const state = forced ?? (loading || threadLoading ? 'loading' : 'ready')
 
-  return <div className="flex min-h-0 flex-1">
+  return <div className="flex min-h-0 flex-1 flex-col">
+    <PageHeader
+      title="Chat"
+      subtitle={`Answers grounded in what ${projectName} has absorbed.`}
+      actions={<>
+        <Button variant="outline" size="sm" onClick={() => onNavigate?.('settings')} title="Configure your answer model">
+          <Cpu size={13} aria-hidden />{model ? `${local ? 'Ollama · ' : ''}${model}` : 'Set up a model'}<Settings2 size={12} aria-hidden />
+        </Button>
+        <Button variant="outline" size="sm" className="md:hidden" onClick={() => selectConversation(null)}>New chat</Button>
+      </>}
+    />
+    <div className="flex min-h-0 flex-1">
     <ConversationList conversations={forced === 'empty' ? [] : conversations} loading={loading}
       activeId={activeId} mode={mode} onSelect={selectConversation} onNew={() => selectConversation(null)} onDelete={removeConversation} />
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <header className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-4">
-        <div className="min-w-0 flex-1"><h1 className="text-[17px] font-semibold">Chat with {projectName}</h1>
-          <p className="mt-0.5 text-xs text-muted-foreground">Answers grounded in your absorbed knowledge.</p>
-        </div>
-        <Button variant="ghost" size="xs" onClick={() => onNavigate?.('settings')} title="Configure your answer model">
-          <Cpu size={13} aria-hidden />{model ? `${local ? 'Ollama · ' : ''}${model}` : 'Set up a model'}<Settings2 size={12} aria-hidden />
-        </Button>
-        <Button variant="outline" size="xs" className="md:hidden" onClick={() => selectConversation(null)}>New chat</Button>
-      </header>
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto px-5"
         onScroll={(e) => { const el = e.currentTarget; pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100 }}>
         <div className="mx-auto w-full max-w-3xl">
@@ -147,7 +150,7 @@ export function Chat({ projectId, projectName, onNavigate }) {
             : <SearchPane state={searching ? 'loading' : 'ready'} query={query} rows={results} starters={[]}
               onStarter={runSearch} onAskInstead={() => { setMode('ask'); ask(query) }} onRetry={() => runSearch(query)} />}
           {error && <div role="alert" className="mb-4 rounded-lg border border-destructive/30 bg-destructive/5 p-3">
-            <p className="flex items-start gap-2 text-[13px] text-destructive"><TriangleAlert size={15} className="mt-0.5 shrink-0" aria-hidden />{error}</p>
+            <p className="flex items-start gap-2 text-sm text-destructive"><TriangleAlert size={15} className="mt-0.5 shrink-0" aria-hidden />{error}</p>
             <div className="mt-2 flex gap-2"><Button variant="outline" size="xs" onClick={() => onNavigate?.('settings')}>Check model settings</Button>
               <Button variant="ghost" size="xs" onClick={() => setError(null)}>Dismiss</Button></div>
           </div>}
@@ -157,12 +160,12 @@ export function Chat({ projectId, projectName, onNavigate }) {
       <div className="border-t border-border px-5 pt-3 pb-4">
         <div className="mx-auto w-full max-w-3xl">
           <div className="mb-3 flex items-center gap-3"><ModeToggle value={mode} onChange={setMode} />
-            <span className="ml-auto text-[11px] text-muted-foreground">{mode === 'ask' ? local ? 'Generated locally with Ollama' : 'Using your configured model' : 'Search extracted source text'}</span>
+            <span className="ml-auto text-xs text-muted-foreground">{mode === 'ask' ? local ? 'Generated locally with Ollama' : 'Using your configured model' : 'Search extracted source text'}</span>
           </div>
           {mode === 'search' ? <div className="flex items-center gap-2.5 rounded-lg border border-border bg-card px-3.5 py-3 focus-within:border-primary">
             <Search size={16} className="text-muted-foreground" aria-hidden />
             <input value={query} onChange={(e) => runSearch(e.target.value)} placeholder="Search your connected files…" aria-label="Search sources"
-              className="min-w-0 flex-1 bg-transparent text-[15px] outline-none placeholder:text-muted-foreground" />
+              className="min-w-0 flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground" />
           </div> : <div className="flex items-end gap-2.5">
             <Textarea aria-label="Question about your knowledge base" rows={2} value={draft} placeholder="Ask a question about your knowledge…"
               onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => {
@@ -171,9 +174,10 @@ export function Chat({ projectId, projectName, onNavigate }) {
             {pending ? <Button variant="outline" size="icon" className="size-12" aria-label="Stop answer" onClick={stop}><Square size={16} aria-hidden /></Button>
               : <Button size="icon" className="size-12" aria-label="Send message" disabled={!draft.trim() || threadLoading || loading} onClick={() => ask(draft)}><Send size={18} aria-hidden /></Button>}
           </div>}
-          {mode === 'ask' && <p className="mt-2 text-[11px] text-muted-foreground">Enter to send · Shift + Enter for a new line. Check source citations for important details.</p>}
+          {mode === 'ask' && <p className="mt-2 text-xs text-muted-foreground">Enter to send · Shift + Enter for a new line. Check source citations for important details.</p>}
         </div>
       </div>
+    </div>
     </div>
   </div>
 }

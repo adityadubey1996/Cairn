@@ -3,6 +3,7 @@ import { ArrowRight, Globe, Plug, Plus, TriangleAlert, X } from 'lucide-react'
 import * as api from '@/api'
 import { usePipelineRun } from '@/lib/usePipelineRun'
 import { ConnectorPicker } from './ConnectorPicker'
+import { ScopePicker } from './ScopePicker'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard } from '@/components/ConnectorCard'
 import { EmptyState } from '@/components/EmptyState'
@@ -16,7 +17,8 @@ const GRID = 'grid grid-cols-1 gap-3 lg:grid-cols-2'
 //
 // `note` and `status` are existing ConnectorCard props, so live progress needed
 // no change to the card itself.
-function ConnectionCard({ connection, runId, onSync, onRemove, onFinish, onOpen }) {
+function ConnectionCard({ connection, runId, onSync, onRemove, onFinish, onOpen,
+                         scope, onScope }) {
   const { run, running, pct } = usePipelineRun(runId, { onFinish })
 
   const progress = running && run
@@ -35,6 +37,8 @@ function ConnectionCard({ connection, runId, onSync, onRemove, onFinish, onOpen 
       onSync={onSync}
       onRemove={onRemove}
       onOpen={onOpen}
+      scope={scope}
+      onScope={onScope}
       openLabel={connection.kind === 'github' ? 'Open repository' : 'Open files'}
     />
   )
@@ -49,11 +53,27 @@ export function Health({ projectId, projectName, forced, onGoFiles, onNavigate }
   const [error, setError] = useState(null)
   const [reload, setReload] = useState(0)
   const [picking, setPicking] = useState(false)
+  // The connection whose scope is being edited, if any.
+  const [scoping, setScoping] = useState(null)
   // connection id -> the run it started. Cleared when that run finishes, which
   // is also when the connection list is refetched so status and item counts
   // come from the server rather than being guessed at here.
   const [runIds, setRunIds] = useState({})
   const [linksBusy, setLinksBusy] = useState(false)
+
+  // One cheap read per connection so every card can say what it is allowed to
+  // read. Decorative: a failure leaves the line off rather than breaking the
+  // screen, and a connector with no scope of its own never shows one.
+  const [scopes, setScopes] = useState({})
+  useEffect(() => {
+    let alive = true
+    Promise.all(connections.map((c) =>
+      api.connectionScope(c.id).then((s) => [c.id, s]).catch(() => null)))
+      .then((pairs) => {
+        if (alive) setScopes(Object.fromEntries(pairs.filter(Boolean)))
+      })
+    return () => { alive = false }
+  }, [connections])
 
   const fetchLinks = async () => {
     setLinksBusy(true)
@@ -126,16 +146,16 @@ export function Health({ projectId, projectName, forced, onGoFiles, onNavigate }
   const state = forced ?? (loading ? 'loading' : error ? 'error' : 'ready')
   const rows = forced === 'empty' ? [] : connections
 
+  // Two cards, because two is what a project usually has — six tall skeletons
+  // resolving into two short cards read as a failed load.
   if (state === 'loading') {
     return (
-      <div className="mx-auto w-full max-w-5xl">
-        <div className={GRID}>
-          {Array.from({ length: 6 }, (_, i) => (
-            <div key={i} className="rounded-lg border border-border bg-card p-3.5">
-              <SkeletonList rows={3} />
-            </div>
-          ))}
-        </div>
+      <div className={GRID}>
+        {Array.from({ length: 2 }, (_, i) => (
+          <div key={i} className="rounded-lg border border-border bg-card p-3.5">
+            <SkeletonList rows={3} />
+          </div>
+        ))}
       </div>
     )
   }
@@ -159,11 +179,11 @@ export function Health({ projectId, projectName, forced, onGoFiles, onNavigate }
   // same picker onboarding uses, so adding a second source is the same act as
   // adding the first.
   const picker = (
-    <div className="mb-5 rounded-[10px] border border-border bg-card p-4">
-      <div className="flex items-start justify-between gap-3">
+    <div className="mb-6">
+      <div className="mb-4 flex items-start justify-between gap-3 border-b border-border pb-3">
         <div>
-          <div className="text-[13.5px] font-semibold">Add a connector</div>
-          <div className="text-[12px] text-muted-foreground">
+          <div className="text-base font-semibold">Add a connector</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">
             Add a source to {projectName ?? 'this project'}, then inspect its files and choose an absorption policy.
           </div>
         </div>
@@ -172,7 +192,6 @@ export function Health({ projectId, projectName, forced, onGoFiles, onNavigate }
         </Button>
       </div>
       <ConnectorPicker
-        className="mt-4"
         projects={projectId ? [{ id: projectId, name: projectName }] : []}
         projectId={projectId}
         connectedKinds={rows.map((c) => c.kind)}
@@ -190,7 +209,7 @@ export function Health({ projectId, projectName, forced, onGoFiles, onNavigate }
   // Shouldn't normally happen post-onboarding, but a project can be created
   // empty — so the affordance is the whole screen rather than a corner of it.
   if (!rows.length) {
-    return picking ? <div className="mx-auto w-full max-w-5xl">{picker}</div> : (
+    return picking ? <div>{picker}</div> : (
       <EmptyState
         className="py-16"
         icon={Plug}
@@ -206,33 +225,43 @@ export function Health({ projectId, projectName, forced, onGoFiles, onNavigate }
   }
 
   return (
-    <div className="mx-auto w-full max-w-5xl">
+    <div>
       {picking && picker}
 
       <div className="mb-4 rounded-lg border border-border bg-card/40 px-3.5 py-3">
-        <div className="flex flex-wrap items-center gap-2 text-[12.5px] font-medium">
+        <div className="flex flex-wrap items-center gap-2 text-sm font-medium">
           <span>Sync</span><ArrowRight size={13} className="text-muted-foreground" aria-hidden />
           <span>Inspect</span><ArrowRight size={13} className="text-muted-foreground" aria-hidden />
           <span>Absorb</span>
         </div>
-        <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
           Sync imports source material. Inspect regular sources in Files and GitHub sources in Repos,
           then choose what becomes durable knowledge in the wiki.
         </p>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5">
-        <span className="text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+        <span className="text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
           {rows.length} connection{rows.length === 1 ? '' : 's'}
         </span>
         <Button variant="outline" size="sm" onClick={() => setPicking(true)}>
           <Plus size={13} aria-hidden /> Add connector
         </Button>
       </div>
+      {scoping && (
+        <ScopePicker
+          connection={scoping}
+          onClose={() => setScoping(null)}
+          onSaved={() => { setScoping(null); setReload((n) => n + 1) }}
+        />
+      )}
+
       <div className={GRID}>
         {rows.map((c) => (
           <ConnectionCard
             key={c.id} connection={c} runId={runIds[c.id] ?? c.runId}
+            scope={scopes[c.id]}
+            onScope={scopes[c.id]?.scopeable ? () => setScoping(c) : undefined}
             onSync={(_c, opts) => (c.kind === 'upload' ? onGoFiles?.() : sync(c, opts))}
             onRemove={() => remove(c)}
             onFinish={() => syncFinished(c.id)}
@@ -245,8 +274,8 @@ export function Health({ projectId, projectName, forced, onGoFiles, onNavigate }
           connector sync, so it stays explicit and separate from every card. */}
       <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-border pt-3">
         <Globe size={14} className="shrink-0 text-muted-foreground" aria-hidden />
-        <span className="text-[12px]">Fetch links found inside synced content</span>
-        <span className="text-[11.5px] text-muted-foreground">Runs across the whole project.</span>
+        <span className="text-xs">Fetch links found inside synced content</span>
+        <span className="text-xs text-muted-foreground">Runs across the whole project.</span>
         <Button size="xs" variant="ghost" className="ml-auto"
                 disabled={linksBusy} onClick={fetchLinks}>
           {linksBusy ? 'Fetching…' : 'Fetch links'}

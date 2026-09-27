@@ -1,0 +1,30 @@
+<h1>Release checklist</h1>
+<p>Owned by the platform team. See <a href="https://example.com/runbook">the runbook</a>
+and <ac:link><ri:page ri:content-title="Deploy policy" ri:space-key="ENG" /><ac:plain-text-link-body><![CDATA[Deploy policy]]></ac:plain-text-link-body></ac:link>.</p>
+<ac:structured-macro ac:name="info" ac:schema-version="1">
+  <ac:parameter ac:name="title">Heads up</ac:parameter>
+  <ac:rich-text-body><p>Freeze starts at 17:00 <time datetime="2026-09-24" />.</p></ac:rich-text-body>
+</ac:structured-macro>
+<h2>Before the cut</h2>
+<ul>
+  <li>Drain the queue</li>
+  <li>Tag the release</li>
+</ul>
+<ol>
+  <li>Run migrations</li>
+  <li>Flip the flag</li>
+</ol>
+<ac:structured-macro ac:name="code" ac:schema-version="1">
+  <ac:parameter ac:name="language">bash</ac:parameter>
+  <ac:plain-text-body><![CDATA[./deploy.sh --env prod
+./smoke.sh]]></ac:plain-text-body>
+</ac:structured-macro>
+<table>
+  <tbody>
+    <tr><th>Service</th><th>Owner</th></tr>
+    <tr><td>api</td><td>Ada</td></tr>
+    <tr><td>web</td><td>Grace</td></tr>
+  </tbody>
+</table>
+<p><ac:image><ri:attachment ri:filename="topology.png" /></ac:image></p>
+<p>Questions go to <ac:emoticon ac:name="smile" /> the channel.</p>

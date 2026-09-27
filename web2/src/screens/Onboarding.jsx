@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ArrowUpRight, Check, Plug, Upload } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, Check, Plug, Sparkles, Upload } from 'lucide-react'
 import * as api from '@/api'
 import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
@@ -8,7 +8,7 @@ import { AddFiles } from '@/components/AddFiles'
 import { ConnectorPicker } from './connect/ConnectorPicker'
 
 // First run only: shown instead of the shell when no key is saved and nothing
-// has ever synced. Three full-page steps, one centred ~480px column.
+// has ever synced. Three steps in one centred card.
 // onDone('chat' | 'connect') hands control back to the app.
 
 const KEY_CONSOLE = 'https://console.anthropic.com/settings/keys'
@@ -17,7 +17,7 @@ const FIRST_SYNC_FILES = 34
 function Steps({ step }) {
   return (
     <div className="flex items-center gap-2.5 pb-6">
-      <span className="text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">
+      <span className="text-xs font-medium uppercase tracking-[0.03em] text-muted-foreground">
         Step {step} of 3
       </span>
       <span className="flex flex-1 gap-1">
@@ -32,8 +32,8 @@ function Steps({ step }) {
 function Headline({ title, children }) {
   return (
     <>
-      <h1 className="text-[15px] font-semibold">{title}</h1>
-      <p className="mt-1.5 text-[13.5px] leading-relaxed text-muted-foreground">{children}</p>
+      <h1 className="text-xl font-semibold tracking-[-0.02em]">{title}</h1>
+      <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">{children}</p>
     </>
   )
 }
@@ -46,17 +46,17 @@ function KeyStep({ apiKey, onKey, tested, testing, onTest, onContinue }) {
         paid for by the key you paste here, and it stays on this machine.
       </Headline>
 
-      <label htmlFor="claude-key" className="mt-5 mb-1.5 block text-[12px] text-muted-foreground">
+      <label htmlFor="claude-key" className="mt-5 mb-1.5 block text-xs text-muted-foreground">
         Claude API key
       </label>
       <input
         id="claude-key" type="password" value={apiKey} placeholder="sk-ant-…"
         onChange={(e) => onKey(e.target.value)}
-        className="w-full rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-[13px] outline-none focus:border-primary"
+        className="w-full rounded-lg border border-border bg-card px-2.5 py-2 font-mono text-sm outline-none focus:border-primary"
       />
       <a
         href={KEY_CONSOLE} target="_blank" rel="noreferrer"
-        className="mt-2 inline-flex items-center gap-1 text-[12px] text-primary hover:underline"
+        className="mt-2 inline-flex items-center gap-1 text-xs text-primary hover:underline"
       >
         Get a key from the Anthropic console
         <ArrowUpRight size={12} aria-hidden />
@@ -71,7 +71,7 @@ function KeyStep({ apiKey, onKey, tested, testing, onTest, onContinue }) {
       </div>
 
       {tested && (
-        <p className={cn('mt-2.5 flex items-center gap-1.5 text-[12px]', tested.ok ? 'text-success' : 'text-destructive')}>
+        <p className={cn('mt-2.5 flex items-center gap-1.5 text-xs', tested.ok ? 'text-success' : 'text-destructive')}>
           {tested.ok && <Check size={12} aria-hidden />}
           {tested.ok ? tested.detail : `Couldn’t use that key — ${tested.detail}`}
         </p>
@@ -87,8 +87,8 @@ function PathCard({ icon: Icon, title, detail, onClick }) {
       className="flex flex-col items-start gap-1.5 rounded-[10px] border border-border bg-card p-3.5 text-left transition-colors hover:border-primary"
     >
       <Icon size={16} className="text-muted-foreground" aria-hidden />
-      <span className="text-[13.5px] font-semibold">{title}</span>
-      <span className="text-[12px] leading-relaxed text-muted-foreground">{detail}</span>
+      <span className="text-sm font-semibold">{title}</span>
+      <span className="text-xs leading-relaxed text-muted-foreground">{detail}</span>
     </button>
   )
 }
@@ -111,12 +111,12 @@ function ConnectStep({
         this computer. Either one is enough to carry on.
       </Headline>
 
-      <label htmlFor="project-name" className="mt-5 mb-1.5 block text-[12px] text-muted-foreground">
+      <label htmlFor="project-name" className="mt-5 mb-1.5 block text-xs text-muted-foreground">
         Name this project
       </label>
       <input
         id="project-name" value={projectName} onChange={(e) => onProjectName(e.target.value)}
-        className="w-full rounded-lg border border-border bg-card px-2.5 py-2 text-[13.5px] outline-none focus:border-primary"
+        className="w-full rounded-lg border border-border bg-card px-2.5 py-2 text-sm outline-none focus:border-primary"
       />
 
       {path === null ? (
@@ -135,7 +135,7 @@ function ConnectStep({
       ) : (
         <button
           type="button" onClick={() => setPath(null)}
-          className="mt-5 flex items-center gap-1.5 text-[12px] text-muted-foreground hover:text-foreground"
+          className="mt-5 flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft size={12} aria-hidden />
           Other ways to bring content in
@@ -161,7 +161,7 @@ function ConnectStep({
       )}
 
       {ready && (
-        <p className="mt-4 flex items-center gap-1.5 text-[12.5px] text-success">
+        <p className="mt-4 flex items-center gap-1.5 text-sm text-success">
           <Check size={13} aria-hidden />
           {[
             connected.length && `${connected.length} source${connected.length === 1 ? '' : 's'} connected`,
@@ -173,7 +173,7 @@ function ConnectStep({
       <div className="mt-6 flex items-center gap-2">
         <Button size="sm" disabled={!ready} onClick={onContinue}>Continue</Button>
         {!ready && (
-          <span className="text-[12px] text-muted-foreground">
+          <span className="text-xs text-muted-foreground">
             Connect a source or add files to carry on.
           </span>
         )}
@@ -195,14 +195,14 @@ function SyncStep({ count, done, onDone }) {
         {done
           ? <Check size={15} className="text-success" aria-hidden />
           : <Spinner className="size-4 text-muted-foreground" />}
-        <span className="text-[13.5px] tabular-nums">{count} files so far</span>
+        <span className="text-sm tabular-nums">{count} files so far</span>
       </div>
 
       <div className="mt-5 flex flex-col items-start gap-2.5">
         <Button size="sm" disabled={!done} onClick={() => onDone('chat')}>Go to Chat</Button>
         <button
           type="button" onClick={() => onDone('connect')}
-          className="text-[12px] text-primary hover:underline"
+          className="text-xs text-primary hover:underline"
         >
           I’ll wait — take me to Connect instead
         </button>
@@ -258,8 +258,15 @@ export function Onboarding({ onDone }) {
   }
 
   return (
-    <div className="h-screen overflow-y-auto bg-background">
-      <div className="mx-auto w-full max-w-[480px] px-5 py-14">
+    <div className="flex h-screen items-center justify-center overflow-y-auto bg-background px-5 py-10">
+      <div className="w-full max-w-[520px]">
+        <div className="mb-5 flex items-center gap-2.5">
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-border bg-card">
+            <Sparkles size={13} aria-hidden />
+          </span>
+          <span className="text-sm font-semibold">Cairn</span>
+        </div>
+        <div className="rounded-xl border border-border bg-card p-6">
         <Steps step={step} />
 
         {step === 1 && (
@@ -279,6 +286,7 @@ export function Onboarding({ onDone }) {
         )}
 
         {step === 3 && <SyncStep count={count} done={done} onDone={onDone} />}
+        </div>
       </div>
     </div>
   )

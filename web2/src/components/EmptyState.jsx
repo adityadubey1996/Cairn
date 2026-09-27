@@ -10,8 +10,8 @@ export function EmptyState({ icon: Icon, title, detail, action, className, title
           <Icon size={20} aria-hidden />
         </span>
       )}
-      <div className={cn('max-w-[320px] text-[13px] leading-relaxed text-foreground', titleClassName)}>{title}</div>
-      {detail && <div className={cn('max-w-[320px] text-[11.5px] leading-relaxed text-muted-foreground', detailClassName)}>{detail}</div>}
+      <div className={cn('max-w-[320px] text-sm leading-relaxed text-foreground', titleClassName)}>{title}</div>
+      {detail && <div className={cn('max-w-[320px] text-xs leading-relaxed text-muted-foreground', detailClassName)}>{detail}</div>}
       {action}
     </div>
   )

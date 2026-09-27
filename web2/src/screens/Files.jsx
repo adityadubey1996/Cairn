@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { ArrowRight, Check, Upload } from 'lucide-react'
 import { AddFiles } from '@/components/AddFiles'
+import { PageHeader } from '@/components/PageHeader'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { usePipelineRun } from '@/lib/usePipelineRun'
@@ -28,30 +29,30 @@ export function Files({ projectId, projectName, onNavigate }) {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <header className="flex flex-wrap items-center gap-3 border-b border-border px-6 py-5">
-        <div className="min-w-0 flex-1">
-          <h1 className="text-xl font-semibold">Files</h1>
-          <p className="mt-1 text-[13px] text-muted-foreground">Connected files, from extraction to wiki. Repository files are in{' '}
-            <button type="button" className="text-primary hover:underline" onClick={() => onNavigate?.('repos')}>Repos</button>.</p>
-        </div>
-        <Button variant="outline" size="sm" onClick={() => onNavigate?.('pipeline')}>
-          Automation <ArrowRight size={13} aria-hidden />
-        </Button>
-        <Button size="sm" onClick={() => setAdding((v) => !v)} aria-expanded={adding}>
-          <Upload size={13} aria-hidden /> {adding ? 'Close upload' : 'Add files'}
-        </Button>
-      </header>
+      <PageHeader
+        title="Files"
+        subtitle={<>Connected files, from extraction to wiki. Repository files are in{' '}
+          <button type="button" className="text-primary hover:underline" onClick={() => onNavigate?.('repos')}>Repos</button>.</>}
+        actions={<>
+          <Button variant="outline" size="sm" onClick={() => onNavigate?.('pipeline')}>
+            Automation <ArrowRight size={13} aria-hidden />
+          </Button>
+          <Button size="sm" onClick={() => setAdding((v) => !v)} aria-expanded={adding}>
+            <Upload size={13} aria-hidden /> {adding ? 'Close upload' : 'Add files'}
+          </Button>
+        </>}
+      />
       <div className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        <div className="mx-auto w-full max-w-5xl">
+        <div className="mx-auto w-full max-w-(--page-width)">
           {adding && <AddFiles className="mb-5" projectId={projectId} onStaged={({ runId: id }) => {
             setRunId(id); setNotice(null); setRefresh((n) => n + 1)
           }} />}
           {running && <div className="mb-4 rounded-lg border border-primary/30 bg-card p-3" role="status">
-            <p className="text-[13px]">{PHASE_LABEL[run?.phase] ?? 'Waiting for the file worker'}
+            <p className="text-sm">{PHASE_LABEL[run?.phase] ?? 'Waiting for the file worker'}
               {run?.items_seen ? ` · ${run.items_written}/${run.items_seen}` : ''}</p>
             {!!run?.items_seen && <Progress className="mt-2" value={pct} label="File processing progress" />}
           </div>}
-          {notice && <p role={notice.error ? 'alert' : 'status'} className={`mb-4 flex items-center gap-2 text-[13px] ${notice.error ? 'text-destructive' : 'text-success'}`}>
+          {notice && <p role={notice.error ? 'alert' : 'status'} className={`mb-4 flex items-center gap-2 text-sm ${notice.error ? 'text-destructive' : 'text-success'}`}>
             {!notice.error && <Check size={14} aria-hidden />}{notice.text}
           </p>}
           <Sources projectId={projectId} onNavigate={onNavigate} refreshKey={refresh} onAddFiles={() => setAdding(true)} />

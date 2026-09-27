@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { CitationChip } from '@/components/CitationChip'
 import { EmptyState } from '@/components/EmptyState'
 import { EventRow } from '@/components/EventRow'
+import { PageHeader } from '@/components/PageHeader'
 import { PersonAvatar } from '@/components/PersonAvatar'
 import { SkeletonList } from '@/components/SkeletonList'
 
@@ -35,18 +36,13 @@ function ErrorState({ title, onRetry }) {
 function Picker({ people, state, q, onQ, selectedId, onSelect, onRetry, className }) {
   return (
     <div className={cn('flex min-h-0 flex-col', className)}>
-      <div className="flex items-center gap-2 px-2.5 pt-2.5 pb-1.5">
-        <span className="px-1 text-[11px] font-medium uppercase tracking-[0.03em] text-muted-foreground">People</span>
-        {state === 'ready' && <span className="text-[11px] text-muted-foreground">{people.length}</span>}
-      </div>
-
-      <div className="px-2.5 pb-2.5">
+      <div className="px-2.5 pt-2.5 pb-2.5">
         <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-1.5 focus-within:border-primary">
           <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden />
           <input
             value={q} onChange={(e) => onQ(e.target.value)}
-            placeholder="Search people…" aria-label="Search people"
-            className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
+            placeholder={state === 'ready' ? `Search ${people.length} ${people.length === 1 ? 'person' : 'people'}…` : 'Search people…'} aria-label="Search people"
+            className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
           />
         </div>
       </div>
@@ -77,14 +73,14 @@ function Picker({ people, state, q, onQ, selectedId, onSelect, onRetry, classNam
             <PersonAvatar name={p.name} initials={p.initials} />
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-1.5">
-                <span className="min-w-0 truncate text-[13px] text-foreground">{p.name}</span>
+                <span className="min-w-0 truncate text-sm text-foreground">{p.name}</span>
                 {p.isOwner && (
-                  <span className="shrink-0 rounded-full border border-border px-1.5 text-[10.5px] uppercase tracking-[0.03em] text-muted-foreground">
+                  <span className="shrink-0 rounded-full border border-border px-1.5 text-xs uppercase tracking-[0.03em] text-muted-foreground">
                     You
                   </span>
                 )}
               </span>
-              <span className="block truncate text-[11.5px] text-muted-foreground">
+              <span className="block truncate text-xs text-muted-foreground">
                 {p.eventCount ?? 0} {p.eventCount === 1 ? 'event' : 'events'} · {ago(p.lastActiveAt)}
               </span>
             </span>
@@ -120,14 +116,14 @@ function Feed({ person, rows, state, chips, filter, onFilter, onRetry }) {
         <PersonAvatar name={person.name} initials={person.initials} size="lg" />
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
-            <span className="truncate text-[15px] font-semibold">{person.name}</span>
+            <span className="truncate text-base font-semibold">{person.name}</span>
             {person.isOwner && (
-              <span className="shrink-0 rounded-full border border-border px-1.5 text-[10.5px] uppercase tracking-[0.03em] text-muted-foreground">
+              <span className="shrink-0 rounded-full border border-border px-1.5 text-xs uppercase tracking-[0.03em] text-muted-foreground">
                 You
               </span>
             )}
           </div>
-          <div className="truncate text-[12px] text-muted-foreground">Last active {ago(person.lastActiveAt)}</div>
+          <div className="truncate text-xs text-muted-foreground">Last active {ago(person.lastActiveAt)}</div>
         </div>
       </div>
 
@@ -138,7 +134,7 @@ function Feed({ person, rows, state, chips, filter, onFilter, onRetry }) {
               key={c.id} type="button" onClick={() => onFilter(c.id)}
               aria-pressed={filter === c.id}
               className={cn(
-                'rounded-full border px-2.5 py-px text-[11.5px]',
+                'rounded-full border px-2.5 py-px text-xs',
                 filter === c.id
                   ? 'border-primary text-foreground'
                   : 'border-border text-muted-foreground hover:border-primary hover:text-foreground',
@@ -274,17 +270,24 @@ export function People({ projectId, projectName }) {
     />
   )
 
+  const header = (
+    <PageHeader
+      title="People"
+      subtitle={`Who touched what in ${projectName ?? 'this project'}.`}
+      actions={narrow && (
+        <Button variant="outline" size="sm" onClick={() => setPickerOpen((v) => !v)} aria-expanded={pickerOpen}>
+          <Users size={13} aria-hidden />
+          {pickerOpen ? 'Close list' : selected?.name ?? 'People'}
+          {!pickerOpen && <ChevronRight size={13} aria-hidden />}
+        </Button>
+      )}
+    />
+  )
+
   if (narrow) {
     return (
       <div className="flex min-h-0 flex-1 flex-col">
-        <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-          <Button variant="outline" size="sm" onClick={() => setPickerOpen((v) => !v)} aria-expanded={pickerOpen}>
-            <Users size={13} aria-hidden />
-            {pickerOpen ? 'Close list' : selected?.name ?? 'People'}
-            {!pickerOpen && <ChevronRight size={13} aria-hidden />}
-          </Button>
-          <span className="truncate text-[12px] text-muted-foreground">{projectName ?? '—'}</span>
-        </div>
+        {header}
         {pickerOpen
           ? picker
           : (
@@ -298,12 +301,15 @@ export function People({ projectId, projectName }) {
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
-      {picker}
-      <Feed
-        person={selected} rows={filtered} state={feedState}
-        chips={chips} filter={filter} onFilter={setFilter} onRetry={retry}
-      />
+    <div className="flex min-h-0 flex-1 flex-col">
+      {header}
+      <div className="flex min-h-0 flex-1">
+        {picker}
+        <Feed
+          person={selected} rows={filtered} state={feedState}
+          chips={chips} filter={filter} onFilter={setFilter} onRetry={retry}
+        />
+      </div>
     </div>
   )
 }

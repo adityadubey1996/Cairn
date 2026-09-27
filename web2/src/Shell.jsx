@@ -41,7 +41,7 @@ export function Shell({ view, onView, projects, projectId, onProject, onCreatePr
           <span className="flex size-6 shrink-0 items-center justify-center rounded-md border border-[#262b36] bg-background">
             <Sparkles size={13} aria-hidden />
           </span>
-          {!collapsed && <span className="text-[13.5px] font-semibold">Cairn</span>}
+          {!collapsed && <span className="text-sm font-semibold">Cairn</span>}
         </div>
 
         <div className={cn(collapsed && 'w-full')}>

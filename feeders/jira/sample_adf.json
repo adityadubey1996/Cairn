@@ -1,0 +1,56 @@
+{
+  "version": 1,
+  "type": "doc",
+  "content": [
+    {"type": "heading", "attrs": {"level": 2},
+     "content": [{"type": "text", "text": "Steps to reproduce"}]},
+    {"type": "paragraph", "content": [
+      {"type": "text", "text": "Open the "},
+      {"type": "text", "text": "runbook", "marks": [
+        {"type": "link", "attrs": {"href": "https://example.atlassian.net/wiki/runbook"}}]},
+      {"type": "text", "text": " and run "},
+      {"type": "text", "text": "make deploy", "marks": [{"type": "code"}]},
+      {"type": "text", "text": "."},
+      {"type": "hardBreak"},
+      {"type": "text", "text": "Ping "},
+      {"type": "mention", "attrs": {"id": "557058", "text": "@Dana Reed"}},
+      {"type": "text", "text": " when it is green."}
+    ]},
+    {"type": "bulletList", "content": [
+      {"type": "listItem", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "Region eu-west-1"}]},
+        {"type": "bulletList", "content": [
+          {"type": "listItem", "content": [
+            {"type": "paragraph", "content": [{"type": "text", "text": "Two replicas"}]}]}]}]},
+      {"type": "listItem", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "Region us-east-1"}]}]}
+    ]},
+    {"type": "orderedList", "content": [
+      {"type": "listItem", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "Drain the queue"}]}]},
+      {"type": "listItem", "content": [
+        {"type": "paragraph", "content": [{"type": "text", "text": "Restart the worker"}]}]}
+    ]},
+    {"type": "codeBlock", "attrs": {"language": "bash"},
+     "content": [{"type": "text", "text": "kubectl rollout restart deploy/worker"}]},
+    {"type": "blockquote", "content": [
+      {"type": "paragraph", "content": [{"type": "text", "text": "The 04:12 alert fired first."}]}]},
+    {"type": "rule"},
+    {"type": "table", "content": [
+      {"type": "tableRow", "content": [
+        {"type": "tableHeader", "content": [
+          {"type": "paragraph", "content": [{"type": "text", "text": "Env"}]}]},
+        {"type": "tableHeader", "content": [
+          {"type": "paragraph", "content": [{"type": "text", "text": "Status"}]}]}]},
+      {"type": "tableRow", "content": [
+        {"type": "tableCell", "content": [
+          {"type": "paragraph", "content": [{"type": "text", "text": "prod"}]}]},
+        {"type": "tableCell", "content": [
+          {"type": "paragraph", "content": [{"type": "text", "text": "degraded"}]}]}]}
+    ]},
+    {"type": "mediaSingle", "content": [
+      {"type": "media", "attrs": {"id": "abc-123", "type": "file", "alt": "latency.png"}}]},
+    {"type": "unknownFutureNode", "content": [
+      {"type": "paragraph", "content": [{"type": "text", "text": "Still readable."}]}]}
+  ]
+}

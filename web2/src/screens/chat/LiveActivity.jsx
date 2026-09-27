@@ -43,7 +43,7 @@ export function LiveActivity({ stage, done }) {
   if (!steps.length) steps.push(['spin', 'Thinking…'])
 
   return (
-    <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2.5 text-[13px]">
+    <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-card px-3 py-2.5 text-sm">
       {steps.map(([kind, label], i) => (
         <div key={i} className={cn('flex items-center gap-2.5', kind === 'spin' ? 'text-muted-foreground' : 'text-foreground')}>
           {kind === 'spin' ? <Spinner className="size-3.5" /> : <Check size={14} className="text-success" aria-hidden />}

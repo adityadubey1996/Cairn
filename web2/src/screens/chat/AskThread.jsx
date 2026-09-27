@@ -25,7 +25,7 @@ export function AskThread({ state, messages, pending, starters, projectName, onS
         icon={MessageSquare}
         className="pt-14"
         titleClassName="max-w-lg text-xl font-semibold"
-        detailClassName="max-w-md text-[13px]"
+        detailClassName="max-w-md text-sm"
         title="Make sense of your knowledge."
         detail="Ask across the files you have absorbed. Cairn reads relevant wiki articles and links its answer to the source evidence."
         action={
@@ -34,7 +34,7 @@ export function AskThread({ state, messages, pending, starters, projectName, onS
             {starters.map((s) => (
               <button
                 key={s} type="button" onClick={() => onStarter?.(s)}
-                className="rounded-lg border border-border bg-card px-3 py-2 text-left text-[13px] text-foreground hover:border-primary"
+                className="rounded-lg border border-border bg-card px-3 py-2 text-left text-sm text-foreground hover:border-primary"
               >
                 {s}
               </button>
@@ -52,7 +52,7 @@ export function AskThread({ state, messages, pending, starters, projectName, onS
       {messages.map((m) => (
         <div key={m.id} className={m.role === 'user' ? 'flex flex-col items-end gap-2' : 'flex flex-col gap-2'}>
           {m.role === 'user' ? (
-            <div className="max-w-[90%] rounded-xl bg-[var(--user)] px-4 py-3 text-[15px] whitespace-pre-wrap sm:max-w-[80%]">{m.text}</div>
+            <div className="max-w-[90%] rounded-xl bg-[var(--user)] px-4 py-3 text-base whitespace-pre-wrap sm:max-w-[80%]">{m.text}</div>
           ) : (
             <>
               {m.process && <LiveActivity stage={m.process} done />}
